@@ -1,0 +1,644 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html>
+<html b:version='2' class='v2' expr:dir='data:blog.languageDirection' xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/2005/gml/b' xmlns:data='http://www.google.com/2005/gml/data' xmlns:expr='http://www.google.com/2005/gml/expr'>
+  <head>
+    <meta content='width=device-width, initial-scale=1' name='viewport'/>
+    <title>AI Orchestrator SPA</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <b:skin><![CDATA[
+      /* Reset & Base */
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        background-color: #0f172a;
+        color: #e2e8f0;
+        font-family: 'Courier New', monospace;
+        line-height: 1.5;
+        overflow-x: hidden;
+      }
+
+      /* Utilities */
+      .hidden { display: none !important; }
+      .flex { display: flex; }
+      .flex-col { flex-direction: column; }
+      .items-center { align-items: center; }
+      .justify-between { justify-content: space-between; }
+      .gap-4 { gap: 1rem; }
+      .p-4 { padding: 1rem; }
+      .mb-4 { margin-bottom: 1rem; }
+      .w-full { width: 100%; }
+      .h-full { height: 100%; }
+      .rounded { border-radius: 0.5rem; }
+
+      /* UI Components */
+      #app {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        grid-template-rows: auto 1fr;
+        gap: 20px;
+      }
+
+      @media (max-width: 768px) {
+        #app { grid-template-columns: 1fr; }
+      }
+
+      /* Sidebar / Controls */
+      .sidebar {
+        background: #1e293b;
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid #334155;
+        box-shadow: 0 0 15px rgba(0,0,0,0.5);
+        grid-row: 1 / -1;
+      }
+
+      .control-group { margin-bottom: 15px; }
+      label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; }
+      input, select, textarea {
+        width: 100%;
+        background: #0f172a;
+        border: 1px solid #334155;
+        color: #f8fafc;
+        padding: 10px;
+        border-radius: 6px;
+        font-family: inherit;
+        font-size: 0.9rem;
+      }
+      input:focus, select:focus, textarea:focus {
+        outline: none;
+        border-color: #8b5cf6;
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
+      }
+
+      button#start-btn {
+        background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+        color: white;
+        border: none;
+        padding: 12px;
+        font-weight: bold;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        transition: transform 0.1s, box-shadow 0.2s;
+      }
+      button#start-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(139, 92, 246, 0.4);
+      }
+      button#start-btn:active { transform: translateY(0); }
+
+      /* Visualizer Area */
+      .visualizer {
+        background: #1e293b;
+        border-radius: 12px;
+        border: 1px solid #334155;
+        padding: 20px;
+        min-height: 200px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .node {
+        width: 100px;
+        height: 100px;
+        background: #0f172a;
+        border: 2px solid #475569;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font-size: 0.8rem;
+        position: relative;
+        margin: 0 20px;
+        transition: all 0.3s ease;
+        z-index: 2;
+      }
+
+      .node.active {
+        border-color: #22d3ee;
+        box-shadow: 0 0 20px #22d3ee;
+        color: #22d3ee;
+        transform: scale(1.1);
+      }
+
+      .connector {
+        height: 2px;
+        background: #475569;
+        flex-grow: 1;
+        max-width: 50px;
+      }
+
+      /* Console / Logs */
+      .console {
+        background: #000000;
+        border-radius: 12px;
+        border: 1px solid #334155;
+        padding: 20px;
+        overflow-y: auto;
+        font-family: 'Fira Code', 'Courier New', monospace;
+        font-size: 0.9rem;
+        color: #22c55e;
+        max-height: 600px;
+      }
+
+      .console-entry {
+        margin-bottom: 20px;
+        border-bottom: 1px solid #1e293b;
+        padding-bottom: 15px;
+        opacity: 0;
+        animation: fadeIn 0.3s forwards;
+      }
+
+      @keyframes fadeIn { to { opacity: 1; } }
+
+      .console-header {
+        color: #94a3b8;
+        font-size: 0.75rem;
+        margin-bottom: 5px;
+        display: flex;
+        justify-content: space-between;
+      }
+
+      /* Markdown Styles inside Console */
+      .markdown-body h1, .markdown-body h2, .markdown-body h3 { color: #f8fafc; margin-top: 1em; }
+      .markdown-body p { margin-bottom: 1em; color: #cbd5e1; }
+      .markdown-body pre {
+        background: #1e1e1e;
+        padding: 10px;
+        border-radius: 4px;
+        overflow-x: auto;
+        color: #e0e0e0;
+      }
+      .markdown-body code {
+        background: #333;
+        padding: 2px 4px;
+        border-radius: 2px;
+        font-family: monospace;
+      }
+
+      /* Checkbox Switch */
+      .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+      .switch input { opacity: 0; width: 0; height: 0; }
+      .slider {
+        position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+        background-color: #334155; transition: .4s; border-radius: 20px;
+      }
+      .slider:before {
+        position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px;
+        background-color: white; transition: .4s; border-radius: 50%;
+      }
+      input:checked + .slider { background-color: #22c55e; }
+      input:checked + .slider:before { transform: translateX(20px); }
+
+    ]]></b:skin>
+  </head>
+  <body>
+    <!-- Main Application -->
+    <div id="app">
+      <!-- Sidebar Configuration -->
+      <div class="sidebar">
+        <h2 style="color:#fff; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px;">Orchestrator</h2>
+
+        <div class="control-group">
+          <label>API Key</label>
+          <input type="password" id="api-key" placeholder="sk-..." />
+        </div>
+
+        <div class="control-group">
+          <label>Provider</label>
+          <select id="provider">
+            <option value="openrouter">OpenRouter</option>
+            <option value="openai">OpenAI</option>
+            <option value="groq">Groq</option>
+            <option value="gemini">Google Gemini</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label>Model</label>
+          <input type="text" id="model" value="gpt-4o" placeholder="e.g. gpt-4o, claude-3-5-sonnet" />
+        </div>
+
+        <div class="control-group">
+          <label>Strategy</label>
+          <select id="strategy">
+            <option value="A">A - Refinamento (Dev -> Revisor -> Fixer)</option>
+            <option value="B">B - Debate (Tese -> Antítese -> Juiz)</option>
+            <option value="D">D - Fábrica (Arquiteto -> Dev)</option>
+            <option value="E">E - Monolith Builder (Core -> UI -> Fullstack)</option>
+            <option value="F">F - Block Builder (Skeleton -> CSS -> JS)</option>
+            <option value="G">G - Auditoria (Dev -> Auditor -> Senior)</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label>Loops (Recursion Limit)</label>
+          <input type="number" id="loops" value="1" min="1" max="10" />
+        </div>
+
+        <div class="control-group">
+          <label class="flex justify-between">
+            Simulation Mode
+            <label class="switch">
+              <input type="checkbox" id="simulation-mode" />
+              <span class="slider"></span>
+            </label>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <label>Prompt</label>
+          <textarea id="prompt" rows="6" placeholder="Describe your task..."></textarea>
+        </div>
+
+        <button id="start-btn" class="w-full rounded">Start Sequence</button>
+      </div>
+
+      <!-- Main Content Area -->
+      <div class="flex flex-col gap-4 h-full">
+        <!-- Visualizer -->
+        <div class="visualizer" id="visualizer">
+          <div style="color: #64748b; font-style: italic;">Waiting for initialization...</div>
+        </div>
+
+        <!-- Console Output -->
+        <div class="console" id="console">
+          <div class="console-entry">
+            <div class="console-header">SYSTEM</div>
+            <div class="markdown-body">Ready to initialize agent swarm.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Required Hidden Section for Blogger -->
+    <b:section id='main' showaddelement='no' style='display:none;'>
+        <b:widget id='Blog1' locked='true' title='Blog Posts' type='Blog'/>
+    </b:section>
+
+    <!-- Application Logic -->
+    <script>
+    //<![CDATA[
+
+    // --- STATE MANAGEMENT ---
+    const state = {
+      apiKey: '',
+      provider: 'openrouter',
+      model: 'gpt-4o',
+      strategy: 'A',
+      loops: 1,
+      prompt: '',
+      simulationMode: false,
+      isRunning: false,
+      logs: [],
+      currentLoop: 0,
+      currentStepIndex: 0,
+      masterContent: '', // For Strategy F & E
+      context: [] // For conversation history
+    };
+
+    // --- AGENT STRUCTURES ---
+    const STRUCTURES = {
+      'A': {
+        name: 'Refinamento',
+        description: 'Dev -> Revisor -> Fixer',
+        steps: [
+          { name: 'Developer', role: 'You are a Senior Developer. Write the initial code based on the user prompt.' },
+          { name: 'Reviewer', role: 'You are a Code Reviewer. Review the provided code, checking for bugs, security issues, and best practices. Provide a list of necessary fixes.' },
+          { name: 'Fixer', role: 'You are a Senior Developer. Apply the fixes suggested by the Reviewer to the original code. Output the full corrected code.' }
+        ]
+      },
+      'B': {
+        name: 'Debate',
+        description: 'Tese -> Antítese -> Juiz',
+        steps: [
+          { name: 'Thesis', role: 'You are a Proponent. Propose a comprehensive solution or argument based on the user prompt.' },
+          { name: 'Antithesis', role: 'You are a Critic. Critique the proposed solution, finding flaws, edge cases, and potential problems.' },
+          { name: 'Judge', role: 'You are a Judge. Evaluate the Thesis and Antithesis. synthesize the best parts of both into a final verdict or solution.' }
+        ]
+      },
+      'D': {
+        name: 'Fábrica',
+        description: 'Arquiteto -> Dev',
+        steps: [
+          { name: 'Architect', role: 'You are a Software Architect. Analyze the user request and list all the files needed for the project, with a brief description of each.' },
+          { name: 'Developer', role: 'You are a Fullstack Developer. Create the files listed by the Architect. Output the code for each file clearly separated.' }
+        ]
+      },
+      'E': {
+        name: 'Monolith Builder',
+        description: 'Core -> UI -> Fullstack',
+        steps: [
+          { name: 'Core', role: 'You are a Backend Developer. Implement the core logic and data structures for the requested application. Do not worry about UI yet.', mode: 'append' },
+          { name: 'UI', role: 'You are a Frontend Developer. Using the existing core logic, build the User Interface (HTML/CSS).', mode: 'append' },
+          { name: 'Fullstack', role: 'You are a Lead Developer. Integrate the Core and UI into a single, polished fullstack application code.', mode: 'append' }
+        ]
+      },
+      'F': {
+        name: 'Block Builder',
+        description: 'Skeleton -> CSS -> JS',
+        steps: [
+          { name: 'Skeleton', role: 'You are a Layout Engineer. Create the HTML structure. You MUST include exactly `/* CSS_HERE */` inside a `<style>` tag and `// JS_HERE` inside a `<script>` tag as placeholders.', mode: 'init_master' },
+          { name: 'CSS', role: 'You are a UI Designer. Generate ONLY the CSS code to style the provided HTML. Do not output HTML or JS, just the CSS rules.', mode: 'inject_css' },
+          { name: 'JS', role: 'You are a JavaScript Developer. Generate ONLY the JavaScript logic for the provided HTML. Do not output HTML or CSS, just the JS code.', mode: 'inject_js' }
+        ]
+      },
+      'G': {
+        name: 'Auditoria',
+        description: 'Dev -> Auditor -> Senior',
+        steps: [
+          { name: 'Developer', role: 'You are a Developer. Write the code for the user request.' },
+          { name: 'Auditor', role: 'You are a Code Auditor. Analyze the code and give it a score from 0 to 100 based on quality, security, and performance. Start your response with "SCORE: [0-100]". Then explain the score.' },
+          { name: 'Senior', role: 'You are a Tech Lead. If the score is less than 80, refactor the code to improve it. If it is 80 or above, output "Code is good to go" and the final code.' }
+        ]
+      }
+    };
+
+    console.log("Orchestrator Logic Initialized");
+
+    // --- API & ENGINE ---
+
+    async function callUnifiedAPI(systemPrompt, userPrompt) {
+      if (state.simulationMode) {
+        return new Promise(resolve => setTimeout(() => {
+          resolve(`[SIMULATION MODE]\n\n**Role:** ${systemPrompt.substring(0, 50)}...\n\n**Response:** This is a simulated response for testing purposes. Here is some mock code:\n\n\`\`\`javascript\nconsole.log("Hello World");\n\`\`\``);
+        }, 1500));
+      }
+
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+
+      let url = '';
+      let body = {};
+
+      if (state.provider === 'gemini') {
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${state.model}:generateContent?key=${state.apiKey}`;
+        body = {
+          contents: [{
+            parts: [{ text: `${systemPrompt}\n\nUser Request: ${userPrompt}` }]
+          }]
+        };
+      } else {
+        // Standard OpenAI format (OpenRouter, OpenAI, Groq)
+        if (state.provider === 'openrouter') {
+          url = 'https://openrouter.ai/api/v1/chat/completions';
+          headers['Authorization'] = `Bearer ${state.apiKey}`;
+          // OpenRouter specific headers
+          headers['HTTP-Referer'] = window.location.href;
+        } else if (state.provider === 'openai') {
+          url = 'https://api.openai.com/v1/chat/completions';
+          headers['Authorization'] = `Bearer ${state.apiKey}`;
+        } else if (state.provider === 'groq') {
+          url = 'https://api.groq.com/openai/v1/chat/completions';
+          headers['Authorization'] = `Bearer ${state.apiKey}`;
+        }
+
+        body = {
+          model: state.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...state.context, // Include previous context
+            { role: 'user', content: userPrompt }
+          ]
+        };
+      }
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`API Error: ${response.status} - ${err}`);
+        }
+
+        const data = await response.json();
+
+        if (state.provider === 'gemini') {
+          return data.candidates[0].content.parts[0].text;
+        } else {
+          return data.choices[0].message.content;
+        }
+      } catch (error) {
+        console.error(error);
+        throw error;
+      }
+    }
+
+    async function runStep() {
+      if (!state.isRunning) return;
+
+      const currentStrategy = STRUCTURES[state.strategy];
+
+      // Check if we are done with loops
+      if (state.currentLoop >= state.loops) {
+        finishExecution();
+        return;
+      }
+
+      // Check if we are done with steps in this loop
+      if (state.currentStepIndex >= currentStrategy.steps.length) {
+        state.currentLoop++;
+        state.currentStepIndex = 0;
+        runStep(); // Continue to next loop
+        return;
+      }
+
+      const currentStep = currentStrategy.steps[state.currentStepIndex];
+      updateVisualizer(state.currentStepIndex); // We will define this later
+      addToLog(`system`, `Starting Step: **${currentStep.name}** (Loop ${state.currentLoop + 1}/${state.loops})`);
+
+      try {
+        // Prepare Context
+        // For the first step of the first loop, use the initial prompt.
+        // For subsequent steps, we might want to pass the chain of thought or the accumulating master content.
+
+        let promptToSend = state.prompt;
+
+        // Special logic for Strategies
+        if (state.strategy === 'F' || state.strategy === 'E') {
+             if (state.masterContent) {
+                 promptToSend += `\n\nCURRENT CODE BASE:\n\`\`\`html\n${state.masterContent}\n\`\`\``;
+             }
+        }
+
+        // Call API
+        const response = await callUnifiedAPI(currentStep.role, promptToSend);
+
+        // Process Response
+        addToLog(currentStep.name, response);
+
+        // Update State based on Mode
+        if (currentStep.mode === 'init_master') {
+            // Extract code block
+            const match = response.match(/```(html|xml)?([\s\S]*?)```/);
+            if (match) state.masterContent = match[2];
+            else state.masterContent = response;
+        } else if (currentStep.mode === 'inject_css') {
+             const match = response.match(/```(css)?([\s\S]*?)```/);
+             const css = match ? match[2] : response;
+             state.masterContent = state.masterContent.replace('/* CSS_HERE */', css);
+        } else if (currentStep.mode === 'inject_js') {
+             const match = response.match(/```(javascript|js)?([\s\S]*?)```/);
+             const js = match ? match[2] : response;
+             state.masterContent = state.masterContent.replace('// JS_HERE', js);
+        } else if (currentStep.mode === 'append') {
+             state.masterContent += "\n\n" + response;
+        }
+
+        // Add to context for conversation continuity (if needed)
+        // We push the user prompt and assistant response to history
+        state.context.push({ role: 'user', content: promptToSend }); // This might be repetitive if promptToSend includes history.
+        // Actually, for simple chaining, we can just push the response as 'assistant' message and the next agent will see it if we send full history.
+        // But our callUnifiedAPI logic constructs body with `...state.context`.
+        // So we should just push the result.
+        // However, promptToSend was modified with masterContent. We probably don't want to duplicate that in history every time.
+        // Let's simplified: context accumulates the conversation.
+        state.context.push({ role: 'assistant', content: response });
+
+        // Update UI with Master Content Preview if available
+        if (state.masterContent) {
+            addToLog('SYSTEM', `**Updated Master Content Preview:**\n\`\`\`html\n${state.masterContent.substring(0, 200)}...\n\`\`\``);
+        }
+
+        // Move to next
+        state.currentStepIndex++;
+        setTimeout(runStep, 1000); // Small delay for UX
+
+      } catch (error) {
+        addToLog('ERROR', error.message);
+        state.isRunning = false;
+        updateUIState(); // We will define this later
+      }
+    }
+
+    function finishExecution() {
+      state.isRunning = false;
+      addToLog('SYSTEM', 'Execution Completed.');
+      if (state.masterContent) {
+          addToLog('FINAL OUTPUT', `\`\`\`html\n${state.masterContent}\n\`\`\``);
+      }
+      updateUIState();
+    }
+
+    // --- UI FUNCTIONS ---
+
+    function updateVisualizer(activeStepIndex) {
+      const visualizer = document.getElementById('visualizer');
+      visualizer.innerHTML = '';
+
+      const currentStrategy = STRUCTURES[state.strategy];
+      if (!currentStrategy) return;
+
+      currentStrategy.steps.forEach((step, index) => {
+        const node = document.createElement('div');
+        node.className = `node ${index === activeStepIndex ? 'active' : ''}`;
+        node.innerText = step.name;
+        visualizer.appendChild(node);
+
+        if (index < currentStrategy.steps.length - 1) {
+          const connector = document.createElement('div');
+          connector.className = 'connector';
+          visualizer.appendChild(connector);
+        }
+      });
+    }
+
+    function addToLog(role, message) {
+      const consoleDiv = document.getElementById('console');
+      const entry = document.createElement('div');
+      entry.className = 'console-entry';
+
+      const header = document.createElement('div');
+      header.className = 'console-header';
+      header.innerText = `${role.toUpperCase()} - ${new Date().toLocaleTimeString()}`;
+
+      const body = document.createElement('div');
+      body.className = 'markdown-body';
+      body.innerHTML = marked.parse(message);
+
+      entry.appendChild(header);
+      entry.appendChild(body);
+      consoleDiv.appendChild(entry);
+      consoleDiv.scrollTop = consoleDiv.scrollHeight;
+    }
+
+    function updateUIState() {
+      const btn = document.getElementById('start-btn');
+      if (state.isRunning) {
+        btn.innerText = 'Running...';
+        btn.disabled = true;
+        btn.style.opacity = '0.7';
+      } else {
+        btn.innerText = 'Start Sequence';
+        btn.disabled = false;
+        btn.style.opacity = '1';
+      }
+    }
+
+    // --- EVENT LISTENERS ---
+
+    document.getElementById('start-btn').addEventListener('click', () => {
+      if (state.isRunning) return;
+
+      // Update State from Inputs
+      state.apiKey = document.getElementById('api-key').value;
+      state.provider = document.getElementById('provider').value;
+      state.model = document.getElementById('model').value;
+      state.strategy = document.getElementById('strategy').value;
+      state.loops = parseInt(document.getElementById('loops').value);
+      state.prompt = document.getElementById('prompt').value;
+      state.simulationMode = document.getElementById('simulation-mode').checked;
+
+      if (!state.apiKey && !state.simulationMode) {
+        alert('Please enter an API Key or enable Simulation Mode.');
+        return;
+      }
+
+      if (!state.prompt) {
+        alert('Please enter a prompt.');
+        return;
+      }
+
+      // Reset Execution State
+      state.isRunning = true;
+      state.currentLoop = 0;
+      state.currentStepIndex = 0;
+      state.logs = [];
+      state.masterContent = '';
+      state.context = [];
+
+      document.getElementById('console').innerHTML = ''; // Clear console
+      addToLog('SYSTEM', `Initializing Strategy: **${STRUCTURES[state.strategy].name}**`);
+
+      updateUIState();
+      updateVisualizer(-1); // Reset visualizer
+
+      // Start
+      runStep();
+    });
+
+    // Update visualizer when strategy changes
+    document.getElementById('strategy').addEventListener('change', (e) => {
+        state.strategy = e.target.value;
+        updateVisualizer(-1);
+    });
+
+    // Initial Visualizer Render
+    updateVisualizer(-1);
+
+    //]]>
+    </script>
+  </body>
+</html>
