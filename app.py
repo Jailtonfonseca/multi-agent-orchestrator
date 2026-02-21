@@ -120,11 +120,14 @@ def main():
     with st.sidebar:
         st.header("Configuration")
         api_key = st.text_input("OpenRouter API Key", type="password", help="Enter your OpenRouter API Key.")
-        model = st.selectbox(
-            "Select Model",
-            ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "google/gemini-pro-1.5"],
-            index=0
-        )
+        model_options = ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "google/gemini-pro-1.5", "Other..."]
+        selected_model = st.selectbox("Select Model", model_options, index=0)
+
+        if selected_model == "Other...":
+            model = st.text_input("Enter Custom Model Name (OpenRouter ID)", placeholder="e.g., meta-llama/llama-3-70b-instruct")
+        else:
+            model = selected_model
+
         st.info("Ensure the model supports function calling for best results with AutoGen.")
 
         reset_btn = st.button("Reset Session")
