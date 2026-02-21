@@ -1,0 +1,10 @@
+pyautogen==0.2.32
+fastapi
+uvicorn
+redis
+websockets
+python-multipart
+celery[redis]
+python-dotenv
+openai
+requests
