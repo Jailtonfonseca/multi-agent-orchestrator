@@ -9,6 +9,7 @@ A powerful, containerized Python web application that leverages **Microsoft Auto
 *   **Autonomous Team Building**: Uses `AgentBuilder` to analyze your task and dynamically instantiate the perfect team of experts.
 *   **Real-time Conversation**: Visualize the multi-agent chat as it happens, with a custom-built log capture system that streams stdout to the Streamlit UI.
 *   **Model Agnostic**: Compatible with any model on OpenRouter (e.g., GPT-4o, Claude 3.5 Sonnet, Gemini Pro 1.5).
+*   **Custom Models**: Easily select "Other..." to manually enter any valid OpenRouter model ID.
 *   **Dockerized**: Fully containerized environment ensuring consistency and easy deployment.
 *   **Secure**: API keys are handled securely via session state and temporary configuration files.
 
