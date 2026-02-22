@@ -5,10 +5,10 @@ import remarkGfm from 'remark-gfm';
 import './index.css';
 import Settings from './Settings';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-const WS_BASE_URL = API_BASE_URL.replace(/^http/, 'ws');
+const API_BASE_URL = (process.env.REACT_APP_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+const WS_BASE_URL = API_BASE_URL.replace(/^https/, 'wss').replace(/^http/, 'ws');
 
-// ── Status helpers ─────────────────────────────────────────────────────────────
+// ── Status helpers ────────────────────────────────────────────────────────────
 const STATUS_META = {
   IDLE: { label: 'Idle', color: '#6b7280', emoji: '💤' },
   BUILDING_TEAM: { label: 'Building Team…', color: '#f59e0b', emoji: '🔨' },
@@ -28,9 +28,8 @@ function StatusBadge({ status }) {
   );
 }
 
-// ── Log Renderer ─────────────────────────────────────────────────────────────
-const chatRegex = /^([a-zA-Z0-9_-]+) \(to ([a-zA-Z0-9_-]+)\):\s*/;
-const userRegex = /^User: /;
+// ── Log Renderer ──────────────────────────────────────────────────────────────
+const chatRegex = /^([A-Za-z0-9_-]+) \(to ([A-Za-z0-9_-]+)\):\s*/;
 
 function LogRenderer({ log }) {
   let content = log;
@@ -43,10 +42,10 @@ function LogRenderer({ log }) {
     sender = chatMatch[1];
     receiver = chatMatch[2];
     content = log.replace(chatRegex, '');
-    type = sender === 'User_Proxy' ? 'proxy' : 'assistant';
-  } else if (log.match(userRegex)) {
+    type = sender.toLowerCase().includes('proxy') ? 'proxy' : 'assistant';
+  } else if (/^User:\s/i.test(log)) {
     sender = 'You';
-    content = log.replace(userRegex, '');
+    content = log.replace(/^User:\s/i, '');
     type = 'user';
   } else if (log.includes('WAITING FOR USER INPUT')) {
     type = 'waiting';
@@ -67,17 +66,17 @@ function LogRenderer({ log }) {
         {type === 'system' || type === 'waiting' ? (
           <div className="system-text">{content}</div>
         ) : (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || ' '}</ReactMarkdown>
         )}
       </div>
     </div>
   );
 }
 
-// ── Typing indicator ──────────────────────────────────────────────────────────
+// ── Typing Indicator ──────────────────────────────────────────────────────────
 function TypingIndicator() {
   return (
-    <div className="message-row system typing-row">
+    <div className="message-row system">
       <div className="avatar avatar-system">⚙️</div>
       <div className="message-content">
         <div className="typing-indicator">
@@ -102,10 +101,14 @@ function App() {
   const [provider, setProvider] = useState('openrouter');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [wsConnected, setWsConnected] = useState(false);
+  const [startError, setStartError] = useState('');   // visible on welcome screen
 
   const logContainerRef = useRef(null);
   const wsRef = useRef(null);
-  const reconnectTimerRef = useRef(null);
+  const reconnectRef = useRef(null);
+  const statusRef = useRef(status);   // keep ref in sync to avoid stale closures
+
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   // ── Persistence ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -115,7 +118,7 @@ function App() {
     if (savedProvider) setProvider(savedProvider);
   }, []);
 
-  // ── Auto-scroll logs ─────────────────────────────────────────────────────────
+  // ── Auto-scroll ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
@@ -128,74 +131,86 @@ function App() {
       const res = await axios.get(`${API_BASE_URL}/api/sessions`);
       setSessions(res.data);
     } catch (err) {
-      console.error('Failed to fetch sessions:', err);
+      console.warn('Could not fetch sessions:', err.message);
     }
   }, []);
 
   useEffect(() => {
     fetchSessions();
-    const interval = setInterval(fetchSessions, 15000); // Poll every 15s for status updates
-    return () => clearInterval(interval);
+    const iv = setInterval(fetchSessions, 15000);
+    return () => clearInterval(iv);
   }, [fetchSessions]);
 
-  // ── WebSocket with reconnect ─────────────────────────────────────────────────
+  // ── WebSocket ────────────────────────────────────────────────────────────────
   const connectWs = useCallback((sid) => {
+    // Close existing connection
     if (wsRef.current) {
+      wsRef.current.onclose = null; // prevent recursive reconnect during manual close
       wsRef.current.close();
     }
-    clearTimeout(reconnectTimerRef.current);
+    clearTimeout(reconnectRef.current);
 
+    console.log(`[WS] Connecting to ${WS_BASE_URL}/ws/${sid}`);
     const ws = new WebSocket(`${WS_BASE_URL}/ws/${sid}`);
     wsRef.current = ws;
 
-    ws.onopen = () => setWsConnected(true);
+    ws.onopen = () => {
+      console.log('[WS] Connected');
+      setWsConnected(true);
+    };
 
     ws.onmessage = (event) => {
       try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'log') {
-          setLogs(prev => [...prev, message.content]);
-        } else if (message.type === 'status') {
-          setStatus(message.content);
-          if (message.content === 'COMPLETED' || message.content === 'ERROR') {
-            fetchSessions(); // Refresh sidebar
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'log') {
+          setLogs(prev => [...prev, msg.content]);
+        } else if (msg.type === 'status') {
+          setStatus(msg.content);
+          if (msg.content === 'COMPLETED' || msg.content === 'ERROR') {
+            fetchSessions();
           }
-        } else if (message.type === 'error') {
-          setLogs(prev => [...prev, `**SYSTEM ERROR:** ${message.content}`]);
+        } else if (msg.type === 'error') {
+          setLogs(prev => [...prev, `**❌ ERROR:** ${msg.content}`]);
           setStatus('ERROR');
           fetchSessions();
         }
       } catch {
-        setLogs(prev => [...prev, event.data]);
+        // Non-JSON message — treat as raw log
+        if (event.data) setLogs(prev => [...prev, event.data]);
       }
     };
 
-    ws.onerror = () => setWsConnected(false);
-
-    ws.onclose = () => {
+    ws.onerror = (e) => {
+      console.error('[WS] Error', e);
       setWsConnected(false);
-      // Auto-reconnect if task is still running
-      if (!['COMPLETED', 'ERROR', 'IDLE'].includes(status)) {
-        reconnectTimerRef.current = setTimeout(() => connectWs(sid), 3000);
+    };
+
+    ws.onclose = (e) => {
+      console.log('[WS] Closed', e.code, e.reason);
+      setWsConnected(false);
+      // Use statusRef to avoid stale closure
+      const currentStatus = statusRef.current;
+      if (!['COMPLETED', 'ERROR', 'IDLE', 'STOPPING'].includes(currentStatus)) {
+        console.log('[WS] Reconnecting in 3s...');
+        reconnectRef.current = setTimeout(() => connectWs(sid), 3000);
       }
     };
-  }, [fetchSessions, status]);
+  }, [fetchSessions]);
 
+  // Wire up WS when sessionId changes
   useEffect(() => {
     if (!sessionId) return;
     connectWs(sessionId);
     return () => {
-      clearTimeout(reconnectTimerRef.current);
-      if (wsRef.current) wsRef.current.close();
+      clearTimeout(reconnectRef.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
     };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
-  const handleModelChange = (e) => {
-    setModel(e.target.value);
-    localStorage.setItem('last_model', e.target.value);
-  };
-
   const handleProviderChange = (e) => {
     const val = e.target.value;
     setProvider(val);
@@ -205,8 +220,14 @@ function App() {
       groq: 'llama3-70b-8192',
       deepseek: 'deepseek-chat',
       openrouter: 'openai/gpt-4o',
+      anthropic: 'claude-3-5-sonnet-20241022',
     };
     if (defaults[val]) setModel(defaults[val]);
+  };
+
+  const handleModelChange = (e) => {
+    setModel(e.target.value);
+    localStorage.setItem('last_model', e.target.value);
   };
 
   const loadSession = async (sess) => {
@@ -214,9 +235,10 @@ function App() {
     setStatus(sess.status);
     setLogs([]);
     setShowSettings(false);
+    setStartError('');
     try {
       const res = await axios.get(`${API_BASE_URL}/api/sessions/${sess.id}/logs`);
-      setLogs(res.data.map(l => l.content || l));
+      setLogs(res.data.map(l => l.content || ''));
     } catch (e) {
       console.error('Failed to load session logs', e);
     }
@@ -227,25 +249,31 @@ function App() {
     setTask('');
     setLogs([]);
     setStatus('IDLE');
+    setStartError('');
     setShowSettings(false);
-    if (wsRef.current) wsRef.current.close();
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+    }
   };
 
   const stopTask = async () => {
     if (!sessionId) return;
+    setStatus('STOPPING');
     try {
       await axios.post(`${API_BASE_URL}/api/stop-task/${sessionId}`);
-      setStatus('STOPPING');
     } catch (e) {
-      console.error('Failed to stop task', e);
+      console.error('Stop failed', e);
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setStartError('');
+
     const apiKey = localStorage.getItem(`key_${provider}`);
-    const systemMessage = localStorage.getItem('system_message');
-    const tavilyKey = localStorage.getItem('key_tavily');
+    const systemMsg = localStorage.getItem('system_message') || null;
+    const tavilyKey = localStorage.getItem('key_tavily') || null;
 
     if (!apiKey) {
       setShowSettings(true);
@@ -254,24 +282,33 @@ function App() {
     if (!task.trim()) return;
 
     setLoading(true);
-    setLogs([]);
-    setStatus('BUILDING_TEAM');
 
     try {
       const res = await axios.post(`${API_BASE_URL}/api/start-task`, {
-        api_key: apiKey, model, task, provider,
-        system_message: systemMessage || null,
-        tavily_key: tavilyKey || null,
+        api_key: apiKey,
+        model,
+        task: task.trim(),
+        provider,
+        system_message: systemMsg,
+        tavily_key: tavilyKey,
       });
+
       const newSid = res.data.session_id;
       setSessionId(newSid);
+      setLogs([]);
+      setStatus('BUILDING_TEAM');
       setSessions(prev => [
-        { id: newSid, task, status: 'BUILDING_TEAM', created_at: Date.now() / 1000, model },
+        { id: newSid, task: task.trim(), status: 'BUILDING_TEAM', created_at: Date.now() / 1000, model },
         ...prev,
       ]);
     } catch (err) {
-      setStatus('ERROR');
-      setLogs([`**Failed to start task:** ${err.message}`]);
+      // Show error VISIBLY on the welcome screen
+      const msg = err.response?.data?.detail
+        || err.response?.data?.message
+        || err.message
+        || 'Unknown error. Is the backend running?';
+      setStartError(msg);
+      console.error('Start task failed:', err);
     } finally {
       setLoading(false);
     }
@@ -286,7 +323,7 @@ function App() {
       await axios.post(`${API_BASE_URL}/api/reply`, { session_id: sessionId, message: msg });
     } catch (err) {
       console.error('Failed to send reply', err);
-      setUserInput(msg);
+      setUserInput(msg); // Restore on failure
     }
   };
 
@@ -295,7 +332,7 @@ function App() {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="app-container">
-      {/* Sidebar toggle (mobile) */}
+      {/* Mobile sidebar toggle */}
       <button
         className="sidebar-toggle"
         onClick={() => setSidebarOpen(v => !v)}
@@ -305,7 +342,7 @@ function App() {
       </button>
 
       {/* Sidebar */}
-      <aside className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
+      <aside className={`sidebar${sidebarOpen ? '' : ' closed'}`}>
         <div className="sidebar-header">
           <button className="new-chat-btn" onClick={startNewSession}>
             ✦ New Task
@@ -323,8 +360,8 @@ function App() {
               onClick={() => loadSession(sess)}
             >
               <span className="session-task-name">
-                {sess.task ? sess.task.substring(0, 36) : 'New Task'}
-                {sess.task && sess.task.length > 36 && '…'}
+                {sess.task ? sess.task.substring(0, 40) : 'New Task'}
+                {sess.task && sess.task.length > 40 && '…'}
               </span>
               <span className="session-meta">
                 <StatusBadge status={sess.status} />
@@ -334,23 +371,26 @@ function App() {
         </div>
 
         <div className="settings-area">
-          <button className="settings-btn" onClick={() => { setShowSettings(v => !v); setSessionId(null); }}>
+          <button
+            className="settings-btn"
+            onClick={() => { setShowSettings(v => !v); setSessionId(null); }}
+          >
             ⚙️ Settings
           </button>
         </div>
       </aside>
 
-      {/* Main Area */}
+      {/* Main */}
       <main className="main-content">
-        {/* Top Status Bar */}
+        {/* Top bar — shown when a session is active */}
         {sessionId && (
           <div className="top-bar">
             <span className="top-bar-title">
-              {sessions.find(s => s.id === sessionId)?.task?.substring(0, 50) || 'Active Session'}
+              {sessions.find(s => s.id === sessionId)?.task?.substring(0, 60) || 'Active Session'}
             </span>
             <div className="top-bar-actions">
               <StatusBadge status={status} />
-              {wsConnected && <span className="ws-dot" title="Connected" />}
+              {wsConnected && <span className="ws-dot" title="WebSocket connected" />}
               {isRunning && (
                 <button className="stop-btn" onClick={stopTask}>Stop ✕</button>
               )}
@@ -362,14 +402,16 @@ function App() {
           <div className="settings-panel">
             <Settings onBack={() => setShowSettings(false)} />
           </div>
+
         ) : !sessionId ? (
-          /* ── Welcome Screen ────────────────────────────────────────────── */
+          /* ── Welcome / Task Form ──────────────────────────────────────── */
           <div className="welcome-screen">
             <div className="welcome-hero">
               <div className="hero-icon">🤖</div>
               <h1>AutoGen Enterprise</h1>
               <p className="hero-subtitle">Describe a task — AI agents will assemble and execute it.</p>
             </div>
+
             <form className="task-form" onSubmit={handleSubmit}>
               <div className="form-row">
                 <div className="form-group">
@@ -379,6 +421,7 @@ function App() {
                     <option value="openai">OpenAI</option>
                     <option value="groq">Groq</option>
                     <option value="deepseek">DeepSeek</option>
+                    <option value="anthropic">Anthropic</option>
                   </select>
                 </div>
                 <div className="form-group" style={{ flex: 2 }}>
@@ -407,14 +450,28 @@ function App() {
                 <small className="form-hint">Ctrl+Enter to start</small>
               </div>
 
+              {/* API key warning */}
               {!localStorage.getItem(`key_${provider}`) && (
                 <div className="api-key-alert">
                   ⚠️ No API key set for <strong>{provider}</strong>.{' '}
-                  <button type="button" onClick={() => setShowSettings(true)}>Configure in Settings →</button>
+                  <button type="button" onClick={() => setShowSettings(true)}>
+                    Configure in Settings →
+                  </button>
                 </div>
               )}
 
-              <button type="submit" className="btn btn-primary" disabled={loading || !task.trim()}>
+              {/* Start error — visible right here on the form */}
+              {startError && (
+                <div className="start-error">
+                  ❌ <strong>Failed to start task:</strong> {startError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={loading || !task.trim()}
+              >
                 {loading ? <span className="btn-spinner" /> : '🚀 Start Task'}
               </button>
             </form>
@@ -425,8 +482,9 @@ function App() {
               ))}
             </div>
           </div>
+
         ) : (
-          /* ── Chat Interface ─────────────────────────────────────────────── */
+          /* ── Chat Interface ─────────────────────────────────────────── */
           <>
             <div className="chat-area" ref={logContainerRef}>
               {logs.length === 0 && isRunning && <TypingIndicator />}
@@ -436,9 +494,7 @@ function App() {
 
             <div className="input-area">
               {status === 'WAITING_FOR_INPUT' && (
-                <div className="input-hint">
-                  🟣 The agents need your input to continue.
-                </div>
+                <div className="input-hint">🟣 The agents need your input to continue.</div>
               )}
               <div className="input-container">
                 <input
