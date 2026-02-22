@@ -9,8 +9,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_URL=postgresql://autogen:autogen123@db:5432/autogen_db
     depends_on:
       - redis
+      - db
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - ./backend:/app
@@ -21,9 +23,11 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_URL=postgresql://autogen:autogen123@db:5432/autogen_db
     depends_on:
       - redis
       - backend
+      - db
     command: celery -A worker.app worker --loglevel=info
     volumes:
       - ./backend:/app
@@ -45,6 +49,29 @@ services:
     ports:
       - "6379:6379"
 
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=autogen
+      - POSTGRES_PASSWORD=autogen123
+      - POSTGRES_DB=autogen_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
 networks:
   default:
     driver: bridge
+
+volumes:
+  postgres_data:

@@ -19,3 +19,8 @@ lxml
 wcwidth
 duckduckgo-search
 tavily-python
+sqlmodel
+psycopg2-binary
+bcrypt
+pyjwt
+passlib[bcrypt]

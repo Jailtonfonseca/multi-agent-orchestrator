@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { useNavigate } from 'react-router-dom';
 import './index.css';
 import Settings from './Settings';
 
@@ -15,13 +18,21 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-
-  // New State for Provider
   const [provider, setProvider] = useState('openrouter');
 
   const logContainerRef = useRef(null);
+  const navigate = useNavigate();
 
-  // Load defaults from localStorage
+  // Axios interceptor for Auth
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    } else {
+      navigate('/login');
+    }
+  }, [navigate]);
+
   useEffect(() => {
     const savedModel = localStorage.getItem('last_model');
     const savedProvider = localStorage.getItem('last_provider');
@@ -29,7 +40,6 @@ function App() {
     if (savedProvider) setProvider(savedProvider);
   }, []);
 
-  // Save on change
   const handleModelChange = (e) => {
     const val = e.target.value;
     setModel(val);
@@ -40,27 +50,24 @@ function App() {
     const val = e.target.value;
     setProvider(val);
     localStorage.setItem('last_provider', val);
-
-    // Suggest default models based on provider
     if (val === 'openai') setModel('gpt-4-turbo');
     if (val === 'groq') setModel('llama3-70b-8192');
     if (val === 'deepseek') setModel('deepseek-chat');
     if (val === 'openrouter') setModel('openai/gpt-4o');
   };
 
-  // Auto-scroll logic
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
 
-  // Fetch Sessions
   const fetchSessions = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/sessions`);
       setSessions(response.data);
     } catch (error) {
+      if (error.response?.status === 401) navigate('/login');
       console.error('Failed to fetch sessions:', error);
     }
   };
@@ -69,11 +76,10 @@ function App() {
     fetchSessions();
   }, []);
 
-  // Load Session Logic
   const loadSession = async (session) => {
     setSessionId(session.id);
     setStatus(session.status);
-    setLogs([]); // Clear previous logs first
+    setLogs([]);
     setShowSettings(false);
 
     try {
@@ -93,7 +99,21 @@ function App() {
     setShowSettings(false);
   };
 
-  // WebSocket Connection
+  const stopTask = async () => {
+    if (!sessionId) return;
+    try {
+      await axios.post(`${API_BASE_URL}/api/stop-task/${sessionId}`);
+      setStatus('STOPPING'); // Optimistic
+    } catch (e) {
+      console.error("Failed to stop", e);
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    navigate('/login');
+  };
+
   useEffect(() => {
     if (!sessionId) return;
 
@@ -112,7 +132,7 @@ function App() {
         } else if (message.type === 'status') {
           setStatus(message.content);
         } else if (message.type === 'error') {
-          setLogs(prev => [...prev, `ERROR: ${message.content}`]);
+          setLogs(prev => [...prev, `**ERROR:** ${message.content}`]);
           setStatus('ERROR');
         }
       } catch (e) {
@@ -131,11 +151,9 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    // Get API Key from localStorage based on provider
     const apiKey = localStorage.getItem(`key_${provider}`);
     const systemMessage = localStorage.getItem('system_message');
-    const tavilyKey = localStorage.getItem('key_tavily'); // Retrieve Tavily Key
+    const tavilyKey = localStorage.getItem('key_tavily');
 
     if (!apiKey) {
       alert(`Please set your API Key for ${provider} in Settings first.`);
@@ -143,10 +161,7 @@ function App() {
       return;
     }
 
-    if (!task) {
-      alert('Please describe a task.');
-      return;
-    }
+    if (!task) return;
 
     setLoading(true);
     setLogs([]);
@@ -159,7 +174,7 @@ function App() {
         task: task,
         provider: provider,
         system_message: systemMessage,
-        tavily_key: tavilyKey // Pass Tavily key
+        tavily_key: tavilyKey
       });
 
       const newSid = response.data.session_id;
@@ -175,7 +190,7 @@ function App() {
     } catch (error) {
       console.error('Error starting task:', error);
       setStatus('ERROR');
-      setLogs(prev => [...prev, `Failed to start task: ${error.message}`]);
+      setLogs(prev => [...prev, `**Failed to start task:** ${error.message}`]);
     } finally {
       setLoading(false);
     }
@@ -183,11 +198,9 @@ function App() {
 
   const handleSendReply = async () => {
     if (!userInput.trim()) return;
-
     const currentInput = userInput;
-    setLogs(prev => [...prev, `\nYou: ${currentInput}\n`]);
+    setLogs(prev => [...prev, `\n**You:** ${currentInput}\n`]);
     setUserInput('');
-
     try {
       await axios.post(`${API_BASE_URL}/api/reply`, {
         session_id: sessionId,
@@ -214,13 +227,11 @@ function App() {
 
   return (
     <div className="app-container">
-      {/* Sidebar */}
       <div className="sidebar">
         <div className="sidebar-header">
-          <span>Sessions</span>
+          <span>History</span>
           <button className="new-chat-btn" onClick={startNewSession} style={{width:'auto', padding:'4px 8px', fontSize:'0.8rem', marginLeft:'10px'}}>+</button>
         </div>
-
         <div className="session-list">
           {sessions.map(sess => (
             <div
@@ -234,117 +245,80 @@ function App() {
               </div>
             </div>
           ))}
-          {sessions.length === 0 && <div style={{padding:'10px', color:'#666', fontSize:'0.8rem'}}>No history yet.</div>}
         </div>
-
-        {/* Settings Button at Bottom */}
-        <button className="settings-btn" onClick={() => setShowSettings(!showSettings)}>
-          ⚙️ Settings
-        </button>
+        <div style={{borderTop:'1px solid #333', padding:'10px'}}>
+            <button className="settings-btn" onClick={() => setShowSettings(!showSettings)} style={{width:'100%', margin:'0 0 10px 0'}}>
+            ⚙️ Settings
+            </button>
+            <button className="settings-btn" onClick={logout} style={{width:'100%', margin:'0', border:'1px solid #d9534f', color:'#d9534f'}}>
+            Logout
+            </button>
+        </div>
       </div>
 
-      {/* Main Content */}
       <div className="main-content">
-        <header className="header">
-          <h1>🤖 AutoGen Production App</h1>
-          <p>Autonomous Agent Team Builder & Executor</p>
+        <header className="header" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <div style={{flex:1}}></div>
+          <div style={{flex:2}}>
+            <h1>🤖 AutoGen Enterprise</h1>
+            <p>Autonomous Agent Team Builder</p>
+          </div>
+          <div style={{flex:1}}></div>
         </header>
 
-        {/* If Settings is active, show Settings Component */}
         {showSettings ? (
           <Settings onBack={() => setShowSettings(false)} />
         ) : (
           <>
-            {/* Configuration Form - Only show if not viewing a running session history or creating new */}
             {(!sessionId) && (
               <div className="card">
-                <h2>New Task Configuration</h2>
-
+                <h2>New Task</h2>
                 <div className="form-group">
-                  <label>LLM Provider</label>
-                  <select
-                    className="form-control"
-                    value={provider}
-                    onChange={handleProviderChange}
-                  >
-                    <option value="openrouter">OpenRouter (Supports all models)</option>
-                    <option value="openai">OpenAI (Official)</option>
-                    <option value="groq">Groq (Fast Inference)</option>
-                    <option value="deepseek">DeepSeek (Official)</option>
-                  </select>
+                  <label>Provider & Model</label>
+                  <div style={{display:'flex', gap:'10px'}}>
+                    <select className="form-control" value={provider} onChange={handleProviderChange} style={{flex:1}}>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="groq">Groq</option>
+                        <option value="deepseek">DeepSeek</option>
+                    </select>
+                    <input type="text" className="form-control" value={model} onChange={handleModelChange} style={{flex:2}} placeholder="Model ID"/>
+                  </div>
                 </div>
-
                 <div className="form-group">
-                  <label>Model ID / Name</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={model}
-                    onChange={handleModelChange}
-                    placeholder={provider === 'openrouter' ? "e.g. openai/gpt-4o" : "e.g. gpt-4-turbo"}
-                  />
-                  <small style={{color:'#666'}}>
-                    {provider === 'openrouter' && "Use full ID like 'openai/gpt-4o' or 'anthropic/claude-3-opus'."}
-                    {provider === 'openai' && "e.g. 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'."}
-                    {provider === 'groq' && "e.g. 'llama3-70b-8192', 'mixtral-8x7b-32768'."}
-                    {provider === 'deepseek' && "e.g. 'deepseek-chat', 'deepseek-coder'."}
-                  </small>
+                  <label>Task</label>
+                  <textarea className="form-control" rows="4" value={task} onChange={(e) => setTask(e.target.value)} placeholder="Describe the task..."/>
                 </div>
-
-                <div className="form-group">
-                  <label>Task Description</label>
-                  <textarea
-                    className="form-control"
-                    rows="4"
-                    value={task}
-                    onChange={(e) => setTask(e.target.value)}
-                    placeholder="Describe the complex task you want the agent team to solve..."
-                  />
-                </div>
-
-                <button
-                  className="btn"
-                  onClick={handleSubmit}
-                  disabled={loading}
-                >
-                  {loading ? 'Starting...' : 'Build Team & Execute'}
-                </button>
+                <button className="btn" onClick={handleSubmit} disabled={loading}>{loading ? 'Starting...' : 'Launch Team'}</button>
               </div>
             )}
 
-            {/* Live Logs - Show if session active */}
             {sessionId && (
-              <div className="card">
+              <div className="card" style={{height: '80vh', display: 'flex', flexDirection: 'column'}}>
                 <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: '10px'}}>
-                  <h2>Execution Logs</h2>
-                  <span className={`status-badge ${getStatusClass(status)}`}>
-                    {status.replace(/_/g, ' ')}
-                  </span>
+                  <div style={{display:'flex', alignItems:'center'}}>
+                      <h2 style={{margin:0, marginRight:'10px'}}>Log Stream</h2>
+                      <span className={`status-badge ${getStatusClass(status)}`}>{status.replace(/_/g, ' ')}</span>
+                  </div>
+                  {(status === 'EXECUTING_TASK' || status === 'BUILDING_TEAM') && (
+                      <button onClick={stopTask} style={{backgroundColor:'#d9534f', color:'white', border:'none', padding:'5px 10px', borderRadius:'4px', cursor:'pointer'}}>Stop Task</button>
+                  )}
                 </div>
 
-                <div className="terminal-window" ref={logContainerRef}>
+                <div className="terminal-window" ref={logContainerRef} style={{flex:1, overflowY:'auto'}}>
                   {logs.length === 0 && <div style={{color: '#666', fontStyle: 'italic'}}>Waiting for logs...</div>}
                   {logs.map((log, index) => (
-                    <div key={index} className="log-entry">{log}</div>
+                    <div key={index} className="log-entry" style={{borderBottom:'1px solid #333', paddingBottom:'5px', marginBottom:'5px'}}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{log}</ReactMarkdown>
+                    </div>
                   ))}
                 </div>
 
-                {/* Interaction Area */}
                 {status === 'WAITING_FOR_INPUT' && (
                   <div style={{marginTop: '15px', borderTop: '1px solid #eee', paddingTop: '15px'}}>
-                    <label style={{display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#d9534f'}}>
-                      🔴 The agents are waiting for your input:
-                    </label>
+                    <label style={{display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#d9534f'}}>🔴 Input Required:</label>
                     <div style={{display: 'flex', gap: '10px'}}>
-                      <input
-                        type="text"
-                        className="form-control"
-                        value={userInput}
-                        onChange={(e) => setUserInput(e.target.value)}
-                        onKeyPress={(e) => e.key === 'Enter' && handleSendReply()}
-                        placeholder="Type your response here..."
-                        autoFocus
-                      />
+                      <input type="text" className="form-control" value={userInput} onChange={(e) => setUserInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleSendReply()} autoFocus />
                       <button className="btn" onClick={handleSendReply}>Send</button>
                     </div>
                   </div>
