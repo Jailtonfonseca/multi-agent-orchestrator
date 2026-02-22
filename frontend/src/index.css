@@ -1,113 +1,327 @@
-/* ... existing styles ... */
-/* Add Sidebar Styles */
-
-.app-container {
-    display: flex;
-    min-height: 100vh;
+/* Global & Layout */
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  background-color: #343541; /* ChatGPT dark bg */
+  color: #ececf1;
 }
 
+.app-container {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Sidebar */
 .sidebar {
-    width: 280px;
-    background-color: #1a1a1a;
-    color: #e0e0e0;
-    display: flex;
-    flex-direction: column;
-    border-right: 1px solid #333;
-    overflow-y: auto;
+  width: 260px;
+  background-color: #202123;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #4d4d4f;
+  flex-shrink: 0;
 }
 
 .sidebar-header {
-    padding: 20px;
-    border-bottom: 1px solid #333;
-    font-weight: bold;
-    font-size: 1.2rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid #4d4d4f;
 }
 
 .new-chat-btn {
-    background-color: #333;
-    color: white;
-    border: 1px solid #555;
-    padding: 8px 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    width: 100%;
-    margin-top: 10px;
-    text-align: center;
+  background-color: transparent;
+  color: white;
+  border: 1px solid #565869;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.2s;
+  font-size: 0.9rem;
 }
 
 .new-chat-btn:hover {
-    background-color: #444;
+  background-color: #2a2b32;
 }
 
-.settings-btn {
-    background-color: transparent;
-    color: #aaa;
-    border: 1px solid #555;
-    padding: 8px;
-    border-radius: 4px;
-    cursor: pointer;
-    margin: 10px 20px;
-    text-align: center;
-}
-
-.settings-btn:hover {
-    background-color: #333;
-    color: white;
+.new-chat-btn::before {
+  content: '+';
+  margin-right: 10px;
+  font-size: 1.2rem;
 }
 
 .session-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 10px;
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
 }
 
 .session-item {
-    padding: 10px;
-    margin-bottom: 5px;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-    font-size: 0.9rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  padding: 12px;
+  margin-bottom: 5px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ececf1;
+  display: flex;
+  flex-direction: column;
 }
 
 .session-item:hover {
-    background-color: #333;
+  background-color: #2a2b32;
 }
 
 .session-item.active {
-    background-color: #2d3748;
-    border-left: 3px solid #63b3ed;
+  background-color: #343541;
+  border: 1px solid #565869;
 }
 
 .session-time {
-    font-size: 0.75rem;
-    color: #888;
-    margin-top: 2px;
+  font-size: 0.7rem;
+  color: #8e8ea0;
+  margin-top: 4px;
 }
 
+.settings-area {
+  padding: 10px;
+  border-top: 1px solid #4d4d4f;
+}
+
+.settings-btn {
+  background: none;
+  border: none;
+  color: #ececf1;
+  cursor: pointer;
+  padding: 10px;
+  width: 100%;
+  text-align: left;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+}
+
+.settings-btn:hover {
+  background-color: #2a2b32;
+}
+
+/* Main Content */
 .main-content {
-    flex: 1;
-    padding: 20px;
-    background-color: #f0f2f5;
-    overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background-color: #343541;
 }
 
-/* Update container to not have margin: 0 auto since it's now flex child */
-.container {
-    max-width: 100%;
-    margin: 0;
-    padding: 0; /* Let flex handle it */
+.chat-area {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 150px; /* Space for input */
 }
 
-/* Adjust Card for full width */
-.card {
-    max-width: 1000px;
-    margin: 0 auto 20px auto;
+.welcome-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #ececf1;
+}
+
+.welcome-screen h1 {
+  font-size: 2.5rem;
+  margin-bottom: 40px;
+}
+
+.card-container {
+  max-width: 600px;
+  width: 90%;
+  background-color: #202123; /* Darker card */
+  padding: 2rem;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: #c5c5d0;
+}
+
+.form-control {
+  width: 100%;
+  padding: 12px;
+  background-color: #40414f;
+  border: 1px solid #565869;
+  border-radius: 6px;
+  color: white;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: #19c37d;
+}
+
+.btn {
+  background-color: #19c37d; /* ChatGPT Green */
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 1rem;
+  transition: background-color 0.2s;
+}
+
+.btn:hover {
+  background-color: #1a7f5a;
+}
+
+.btn:disabled {
+  background-color: #565869;
+  cursor: not-allowed;
+}
+
+/* Chat Bubbles */
+.message-row {
+  display: flex;
+  padding: 20px;
+  border-bottom: 1px solid #2a2b32; /* Subtle separator */
+}
+
+.message-row.user {
+  background-color: #343541;
+}
+
+.message-row.assistant {
+  background-color: #444654; /* Slightly lighter for AI */
+}
+
+.message-row.system {
+  background-color: #343541;
+  padding: 10px 20px;
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 15px;
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+
+.avatar.ai { background-color: #19c37d; }
+.avatar.user { background-color: #5436da; }
+.avatar.sys { background-color: #565869; font-size: 0.8rem; width: 24px; height: 24px; }
+
+.message-content {
+  flex: 1;
+  line-height: 1.6;
+  font-size: 1rem;
+  overflow-x: hidden;
+}
+
+.sender-name {
+  font-weight: bold;
+  margin-bottom: 5px;
+  font-size: 0.9rem;
+  color: #c5c5d0;
+}
+
+.system-text {
+  color: #8e8ea0;
+  font-family: 'Consolas', monospace;
+  font-size: 0.85rem;
+}
+
+/* Markdown Styles */
+.message-content pre {
+  background-color: black;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.message-content code {
+  font-family: 'Consolas', monospace;
+}
+
+/* Input Area (Sticky) */
+.input-area {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 20px;
+  background-image: linear-gradient(180deg, rgba(53,53,65,0), #343541 20%);
+}
+
+.input-container {
+  max-width: 800px;
+  margin: 0 auto;
+  position: relative;
+  display: flex;
+  gap: 10px;
+  background-color: #40414f;
+  padding: 10px;
+  border-radius: 12px;
+  box-shadow: 0 0 15px rgba(0,0,0,0.1);
+  border: 1px solid #565869;
+}
+
+.chat-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: white;
+  resize: none;
+  height: 24px; /* auto grow logic needed or fixed */
+  max-height: 200px;
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+.chat-input:focus {
+  outline: none;
+}
+
+.send-btn {
+  background: #19c37d;
+  border: none;
+  border-radius: 4px;
+  color: white;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.status-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  background-color: rgba(32, 33, 35, 0.9);
+  color: #c5c5d0;
+  text-align: center;
+  padding: 5px;
+  font-size: 0.8rem;
+  z-index: 10;
+  border-bottom: 1px solid #565869;
 }
