@@ -10,12 +10,23 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgresql://autogen:autogen123@db:5432/autogen_db
+      - MAX_ROUNDS=12
+      - WORKSPACES_DIR=/tmp/workspaces
     depends_on:
-      - redis
-      - db
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     command: uvicorn main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
     volumes:
       - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
   worker:
     build: ./backend
@@ -24,30 +35,43 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - DATABASE_URL=postgresql://autogen:autogen123@db:5432/autogen_db
+      - MAX_ROUNDS=12
+      - WORKSPACES_DIR=/tmp/workspaces
     depends_on:
-      - redis
-      - backend
-      - db
-    command: celery -A worker.app worker --loglevel=info
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    command: celery -A worker.app worker --loglevel=info --concurrency=2
+    restart: unless-stopped
     volumes:
       - ./backend:/app
+      - /tmp/workspaces:/tmp/workspaces
 
   frontend:
     build: ./frontend
     ports:
-      - "3001:3000"
+      - "3000:3000"
     environment:
       - REACT_APP_API_URL=http://localhost:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
     volumes:
       - ./frontend:/app
       - /app/node_modules
 
   redis:
     image: redis:7-alpine
-    # ports:
-    #   - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   db:
     image: postgres:15-alpine
@@ -60,6 +84,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autogen -d autogen_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   adminer:
     image: adminer
@@ -67,7 +96,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
 networks:
   default:

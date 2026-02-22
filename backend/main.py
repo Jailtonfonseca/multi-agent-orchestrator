@@ -1,4 +1,5 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, Depends, status
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlmodel import Session, select
@@ -11,22 +12,45 @@ import os
 import redis
 import redis.asyncio as aioredis
 
-from database import create_db_and_tables, get_session
+from database import create_db_and_tables, get_session, engine
 from models import Session as DBSession, Log
 from worker import create_team_and_execute, app as celery_app
 
-app = FastAPI()
+# ── Redis ──────────────────────────────────────────────────────────────────────
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+redis_host = REDIS_URL.split("//")[-1].split(":")[0]
+redis_port = int(REDIS_URL.split(":")[-1].split("/")[0])
 
-# Init DB on startup
-@app.on_event("startup")
-def on_startup():
-    time.sleep(3)
-    try:
-        create_db_and_tables()
-    except Exception as e:
-        print(f"DB Init Error: {e}")
+redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=False)
+aioredis_client = aioredis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=False)
 
-# CORS
+
+def _wait_for_db(retries: int = 10, delay: float = 2.0):
+    """Retry DB creation on startup — avoids race condition with Postgres."""
+    for attempt in range(1, retries + 1):
+        try:
+            create_db_and_tables()
+            print(f"DB ready after {attempt} attempt(s).")
+            return
+        except Exception as e:
+            print(f"DB init attempt {attempt}/{retries} failed: {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise RuntimeError("Could not connect to the database after multiple retries.")
+
+
+# ── Lifespan (replaces deprecated @app.on_event) ─────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _wait_for_db()
+    yield
+    # Cleanup on shutdown
+    await aioredis_client.aclose()
+
+
+app = FastAPI(title="AutoGen Enterprise API", version="1.1.0", lifespan=lifespan)
+
+# ── CORS ───────────────────────────────────────────────────────────────────────
 origins = [
     "http://localhost:3000",
     "http://localhost:3001",
@@ -42,10 +66,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-redis_client = redis.Redis(host='redis', port=6379, db=0)
-aioredis_client = aioredis.Redis(host='redis', port=6379, db=0)
-
-# --- Pydantic Models ---
+# ── Pydantic Models ────────────────────────────────────────────────────────────
 class TaskRequest(BaseModel):
     task: str
     api_key: str
@@ -54,9 +75,11 @@ class TaskRequest(BaseModel):
     system_message: Optional[str] = None
     tavily_key: Optional[str] = None
 
+
 class ChatReply(BaseModel):
     session_id: str
     message: str
+
 
 class SessionResponse(BaseModel):
     id: str
@@ -65,8 +88,8 @@ class SessionResponse(BaseModel):
     created_at: float
     status: str
 
-# --- API Routes ---
 
+# ── API Routes ─────────────────────────────────────────────────────────────────
 @app.post("/api/start-task")
 def start_task(
     request: TaskRequest,
@@ -96,10 +119,12 @@ def start_task(
 
     return {"session_id": session_id, "task_id": task_result.id}
 
+
 @app.post("/api/stop-task/{session_id}")
 def stop_task(session_id: str):
     redis_client.publish(f"input_{session_id}", "TERMINATE")
     return {"status": "stop_signal_sent"}
+
 
 @app.post("/api/reply")
 def send_reply(reply: ChatReply, session: Session = Depends(get_session)):
@@ -117,11 +142,22 @@ def send_reply(reply: ChatReply, session: Session = Depends(get_session)):
 
     return {"status": "sent"}
 
+
 @app.get("/api/sessions", response_model=List[SessionResponse])
 def get_sessions(session: Session = Depends(get_session)):
-    # Return all sessions, sorted by date
-    all_sessions = session.exec(select(DBSession).order_by(DBSession.created_at.desc())).all()
+    all_sessions = session.exec(
+        select(DBSession).order_by(DBSession.created_at.desc())
+    ).all()
     return all_sessions
+
+
+@app.get("/api/sessions/{session_id}", response_model=SessionResponse)
+def get_session_by_id(session_id: str, session: Session = Depends(get_session)):
+    db_sess = session.get(DBSession, session_id)
+    if not db_sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return db_sess
+
 
 @app.get("/api/sessions/{session_id}/logs")
 def get_session_logs(session_id: str, session: Session = Depends(get_session)):
@@ -129,8 +165,13 @@ def get_session_logs(session_id: str, session: Session = Depends(get_session)):
     if not db_sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    logs = session.exec(select(Log).where(Log.session_id == session_id).order_by(Log.timestamp)).all()
+    logs = session.exec(
+        select(Log)
+        .where(Log.session_id == session_id)
+        .order_by(Log.timestamp)
+    ).all()
     return [{"type": l.type, "content": l.content, "timestamp": l.timestamp} for l in logs]
+
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -147,7 +188,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     if isinstance(message['data'], bytes):
                         data_str = message['data'].decode('utf-8')
                         await websocket.send_text(data_str)
-                except Exception as e:
+                    elif isinstance(message['data'], str):
+                        await websocket.send_text(message['data'])
+                except Exception:
                     break
 
             await asyncio.sleep(0.01)
@@ -159,9 +202,29 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     finally:
         try:
             await pubsub.unsubscribe(session_id)
-        except:
+            await pubsub.aclose()
+        except Exception:
             pass
+
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    """Deep health check: tests Redis and DB connectivity."""
+    health = {"status": "ok", "redis": "ok", "db": "ok"}
+
+    # Check Redis
+    try:
+        redis_client.ping()
+    except Exception as e:
+        health["redis"] = f"error: {str(e)}"
+        health["status"] = "degraded"
+
+    # Check DB
+    try:
+        with Session(engine) as session:
+            session.exec(select(DBSession).limit(1)).all()
+    except Exception as e:
+        health["db"] = f"error: {str(e)}"
+        health["status"] = "degraded"
+
+    return health
