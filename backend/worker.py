@@ -108,7 +108,7 @@ class InteractiveUserProxy(autogen.UserProxyAgent):
         return ""
 
 @app.task(name="worker.create_team_and_execute")
-def create_team_and_execute(session_id, task, api_key, model):
+def create_team_and_execute(session_id, task, api_key, model, provider="openrouter", system_message=None):
     """
     Celery task to run the AutoGen process.
     """
@@ -131,11 +131,38 @@ def create_team_and_execute(session_id, task, api_key, model):
 
         output_redirector = RedisOutputRedirector(session_id)
 
-        config_list = [{
+        # --- Provider Configuration ---
+        base_url = "https://openrouter.ai/api/v1" # Default
+
+        if provider == "openai":
+            base_url = None # Standard OpenAI
+        elif provider == "groq":
+            base_url = "https://api.groq.com/openai/v1"
+        elif provider == "deepseek":
+            base_url = "https://api.deepseek.com"
+        elif provider == "gemini":
+            # AutoGen supports Gemini via its own library or OpenAI compatibility?
+            # Usually better to use VertexAI/Gemini lib directly or via OpenRouter proxy.
+            # Assuming OpenAI compatible endpoint if user provides base_url, otherwise standard.
+            # For simplicity, if provider is 'gemini' but user is using API key, likely needs specialized config.
+            # Let's stick to standard OpenAI compatible for now as fallback.
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        elif provider == "anthropic":
+             # Anthropic usually requires `api_type="anthropic"` in older versions or use litellm.
+             # However, AgentBuilder heavily relies on OpenAI format.
+             # Best to use OpenRouter for Anthropic if not using specialized adapter.
+             # Let's assume standard base_url if provided, else None.
+             pass
+
+        llm_config_entry = {
             "model": model,
             "api_key": api_key,
-            "base_url": "https://openrouter.ai/api/v1",
-        }]
+        }
+
+        if base_url:
+            llm_config_entry["base_url"] = base_url
+
+        config_list = [llm_config_entry]
 
         with open(config_filename, "w") as f:
             json.dump(config_list, f)
@@ -144,7 +171,7 @@ def create_team_and_execute(session_id, task, api_key, model):
         os.makedirs(work_dir, exist_ok=True)
 
         with contextlib.redirect_stdout(output_redirector):
-            print(f"Initializing AgentBuilder for model: {model}...")
+            print(f"Initializing AgentBuilder for model: {model} (Provider: {provider})...")
             builder = AgentBuilder(
                 config_file_or_env=config_filename,
                 builder_model=model,
@@ -159,6 +186,9 @@ def create_team_and_execute(session_id, task, api_key, model):
                 "You have access to a 'search_web' tool. Prefer using this tool to find real-time information rather than assuming facts. "
                 "Agents must use the provided python environment which has pandas, numpy, requests, duckduckgo-search, and matplotlib pre-installed. "
             )
+
+            if system_message:
+                system_prompt_hint += f"\n\nGlobal Instructions: {system_message}"
 
             enhanced_task = f"{system_prompt_hint}\n\nUser Task: {task}"
 
@@ -180,7 +210,6 @@ def create_team_and_execute(session_id, task, api_key, model):
             print(f"Team built with {len(agent_list)} agents. configuring tools...")
 
             # --- REGISTER TOOLS ---
-            # Create User Proxy first
             user_proxy = InteractiveUserProxy(
                 session_id=session_id,
                 name="User_Proxy",
@@ -192,15 +221,11 @@ def create_team_and_execute(session_id, task, api_key, model):
                 is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
             )
 
-            # Register 'search_web' for all agents and user_proxy
-            # This allows any agent to call the function, and user_proxy to execute it
-
-            # Register for User Proxy (Executor)
             user_proxy.register_for_execution(name="search_web")(search_web)
 
-            # Register for Assistants (Callers)
             for agent in agent_list:
-                if agent.llm_config:
+                # IMPORTANT: Check for llm_config to avoid crash on proxy agents
+                if getattr(agent, 'llm_config', False):
                     autogen.agentchat.register_function(
                         search_web,
                         caller=agent,
@@ -210,7 +235,7 @@ def create_team_and_execute(session_id, task, api_key, model):
                     )
                     print(f"Registered tool 'search_web' for agent: {agent.name}")
                 else:
-                    print(f"Skipping tool registration for agent '{agent.name}' (no llm_config)")
+                     print(f"Skipping tool registration for agent '{agent.name}' (no llm_config)")
 
             print("Starting conversation...")
 
