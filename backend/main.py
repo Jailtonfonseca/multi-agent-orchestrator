@@ -10,6 +10,7 @@ import asyncio
 import time
 import os
 import redis
+import redis.asyncio as aioredis # Async Redis for WebSockets
 
 from database import create_db_and_tables, get_session
 from models import User, Session as DBSession, Log
@@ -21,7 +22,6 @@ app = FastAPI()
 # Init DB on startup
 @app.on_event("startup")
 def on_startup():
-    # Wait a bit for DB to be ready in docker-compose
     time.sleep(3)
     try:
         create_db_and_tables()
@@ -29,19 +29,34 @@ def on_startup():
         print(f"DB Init Error: {e}")
 
 # CORS
+# Explicit origins are safer and often required for credentials
+origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Sync Redis for standard endpoints
 redis_client = redis.Redis(host='redis', port=6379, db=0)
+# Async Redis for WebSockets
+aioredis_client = aioredis.Redis(host='redis', port=6379, db=0)
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 # --- Dependencies ---
-async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
+# Changed to sync def to allow threading if needed, but jose is pure python.
+# DB access inside here is sync, so this dependency effectively blocks if used in async def.
+# Used in def endpoints -> runs in threadpool. OK.
+def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
     from jose import jwt, JWTError
     from auth import SECRET_KEY, ALGORITHM
     try:
@@ -86,6 +101,7 @@ class SessionResponse(BaseModel):
     status: str
 
 # --- Auth Routes ---
+# Changed to 'def' to support sync DB session
 @app.post("/auth/register", response_model=Token)
 def register(user: UserCreate, session: Session = Depends(get_session)):
     existing_user = session.exec(select(User).where(User.username == user.username)).first()
@@ -115,16 +131,15 @@ def read_users_me(current_user: User = Depends(get_current_user)):
     return {"username": current_user.username}
 
 # --- API Routes ---
-
+# Changed to 'def' to allow blocking I/O in threadpool
 @app.post("/api/start-task")
-async def start_task(
+def start_task(
     request: TaskRequest,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
     session_id = str(uuid.uuid4())
 
-    # Create DB Session Entry
     db_sess = DBSession(
         id=session_id,
         user_id=current_user.id,
@@ -136,7 +151,6 @@ async def start_task(
     session.add(db_sess)
     session.commit()
 
-    # Trigger Celery Task
     task_result = create_team_and_execute.delay(
         session_id=session_id,
         task=request.task,
@@ -150,21 +164,16 @@ async def start_task(
     return {"session_id": session_id, "task_id": task_result.id}
 
 @app.post("/api/stop-task/{session_id}")
-async def stop_task(session_id: str, current_user: User = Depends(get_current_user)):
-    # 1. Publish terminate signal to Redis (for InteractiveProxy)
+def stop_task(session_id: str, current_user: User = Depends(get_current_user)):
+    # Sync redis client is fine here
     redis_client.publish(f"input_{session_id}", "TERMINATE")
-
-    # 2. Revoke Celery task (if we stored task_id - tricky without persistence, but for now we rely on signal)
-    # TODO: Store celery_task_id in DBSession to revoke properly
-
     return {"status": "stop_signal_sent"}
 
 @app.post("/api/reply")
-async def send_reply(reply: ChatReply, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+def send_reply(reply: ChatReply, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     channel = f"input_{reply.session_id}"
     redis_client.publish(channel, reply.message)
 
-    # Save user reply to DB
     log = Log(
         session_id=reply.session_id,
         type="log",
@@ -177,14 +186,12 @@ async def send_reply(reply: ChatReply, current_user: User = Depends(get_current_
     return {"status": "sent"}
 
 @app.get("/api/sessions", response_model=List[SessionResponse])
-async def get_sessions(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    # Filter by user
+def get_sessions(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     user_sessions = session.exec(select(DBSession).where(DBSession.user_id == current_user.id).order_by(DBSession.created_at.desc())).all()
     return user_sessions
 
 @app.get("/api/sessions/{session_id}/logs")
-async def get_session_logs(session_id: str, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    # Ensure user owns session
+def get_session_logs(session_id: str, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
     db_sess = session.get(DBSession, session_id)
     if not db_sess or db_sess.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -192,29 +199,36 @@ async def get_session_logs(session_id: str, current_user: User = Depends(get_cur
     logs = session.exec(select(Log).where(Log.session_id == session_id).order_by(Log.timestamp)).all()
     return [{"type": l.type, "content": l.content, "timestamp": l.timestamp} for l in logs]
 
+# WebSocket must remain async def
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    # Note: WebSockets are hard to auth via headers. Usually query param ?token=...
     await websocket.accept()
-    pubsub = redis_client.pubsub()
-    pubsub.subscribe(session_id)
+    pubsub = aioredis_client.pubsub()
+    await pubsub.subscribe(session_id)
 
     try:
         while True:
-            message = pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+            # Async get_message
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+
             if message:
                 try:
                     if isinstance(message['data'], bytes):
                         data_str = message['data'].decode('utf-8')
                         await websocket.send_text(data_str)
                 except Exception as e:
+                    print(f"WS Error: {e}")
                     break
+
             await asyncio.sleep(0.01)
+
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        print(f"WebSocket Loop Error: {e}")
     finally:
         try:
-            pubsub.unsubscribe(session_id)
+            await pubsub.unsubscribe(session_id)
         except:
             pass
 

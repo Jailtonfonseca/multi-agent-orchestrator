@@ -4,6 +4,7 @@ import contextlib
 import json
 import redis
 import time
+import sys
 from celery import Celery
 import autogen
 from autogen.agentchat.contrib.agent_builder import AgentBuilder
@@ -20,7 +21,7 @@ app = Celery('autogen_tasks', broker='redis://redis:6379/0', backend='redis://re
 # Redis Client
 redis_client = redis.Redis(host='redis', port=6379, db=0)
 
-# --- TOOLS (Same as before) ---
+# --- TOOLS ---
 def search_web(query: str, tavily_key: str = None) -> str:
     if tavily_key and len(tavily_key) > 5:
         try:
@@ -73,17 +74,22 @@ class DBOutputRedirector(io.StringIO):
             msg = {"type": "log", "content": s, "timestamp": time.time()}
             try:
                 redis_client.publish(self.session_id, json.dumps(msg))
-            except:
+            except Exception:
                 pass
 
             # 2. Persistence via Postgres
+            # Using try/except to prevent logging failures from crashing the task
             try:
+                # Use a fresh session per log write.
+                # Since engine has connection pooling, this is relatively cheap.
+                # Ideally, we would batch this, but for real-time logs, immediate write is safer against crashes.
                 with Session(engine) as session:
                     log = Log(session_id=self.session_id, type="log", content=s, timestamp=time.time())
                     session.add(log)
                     session.commit()
             except Exception as e:
-                print(f"DB Log Error: {e}")
+                # Fallback to stderr if DB fails
+                sys.stderr.write(f"DB Log Error: {e}\n")
 
         return len(s)
 
@@ -112,12 +118,13 @@ class InteractiveUserProxy(autogen.UserProxyAgent):
         pubsub.subscribe(self.input_channel)
 
         try:
+            # Block until message received
             for message in pubsub.listen():
                 if message['type'] == 'message':
                     user_input = message['data'].decode('utf-8')
 
                     if user_input == "TERMINATE":
-                        return "exit" # Handle stop signal
+                        return "exit"
 
                     executing_msg = json.dumps({"type": "status", "content": "EXECUTING_TASK"})
                     redis_client.publish(self.session_id, executing_msg)
@@ -140,13 +147,11 @@ def create_team_and_execute(session_id, task, api_key, model, provider="openrout
     output_redirector = DBOutputRedirector(session_id)
     config_filename = f"OAI_{session_id}.json"
 
-    # DB Status Update: BUILDING_TEAM (Already set in main.py)
-
     try:
         start_msg = json.dumps({"type": "status", "content": "BUILDING_TEAM"})
         redis_client.publish(session_id, start_msg)
 
-        # ... Provider Config Logic (Same as before) ...
+        # ... Provider Config Logic ...
         base_url = "https://openrouter.ai/api/v1"
         if provider == "openai": base_url = None
         elif provider == "groq": base_url = "https://api.groq.com/openai/v1"
