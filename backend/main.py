@@ -6,7 +6,8 @@ import redis
 import json
 import uuid
 import asyncio
-from typing import List
+import time
+from typing import List, Optional, Any
 from celery.result import AsyncResult
 from worker import create_team_and_execute
 
@@ -32,6 +33,13 @@ class TaskRequest(BaseModel):
 class ChatReply(BaseModel):
     session_id: str
     message: str
+
+class Session(BaseModel):
+    id: str
+    task: str
+    model: str
+    created_at: float
+    status: str
 
 @app.post("/api/start-task")
 async def start_task(request: TaskRequest):
@@ -59,7 +67,62 @@ async def send_reply(reply: ChatReply):
     # Publish the user's input to the specific input channel for this session
     channel = f"input_{reply.session_id}"
     redis_client.publish(channel, reply.message)
+
+    # Also log it for history (as a log type)
+    log_entry = json.dumps({
+        "type": "log",
+        "content": f"\nUser: {reply.message}\n",
+        "timestamp": time.time()
+    })
+    redis_client.rpush(f"logs:{reply.session_id}", log_entry)
+
     return {"status": "sent"}
+
+@app.get("/api/sessions", response_model=List[Session])
+async def get_sessions():
+    """
+    Retrieves a list of all past sessions.
+    """
+    session_ids = redis_client.lrange("all_sessions", 0, -1)
+    sessions = []
+
+    if not session_ids:
+        return []
+
+    for sid in session_ids:
+        try:
+            sid_str = sid.decode('utf-8')
+            data = redis_client.hgetall(f"session:{sid_str}")
+            if data:
+                # Decode bytes to strings
+                decoded = {k.decode('utf-8'): v.decode('utf-8') for k, v in data.items()}
+                sessions.append({
+                    "id": decoded.get("id"),
+                    "task": decoded.get("task"),
+                    "model": decoded.get("model"),
+                    "created_at": float(decoded.get("created_at", 0)),
+                    "status": decoded.get("status")
+                })
+        except Exception as e:
+            # Skip corrupted entries
+            continue
+
+    return sessions
+
+@app.get("/api/sessions/{session_id}/logs")
+async def get_session_logs(session_id: str):
+    """
+    Retrieves full log history for a session.
+    """
+    logs = redis_client.lrange(f"logs:{session_id}", 0, -1)
+    parsed_logs = []
+    for log in logs:
+        try:
+            parsed_logs.append(json.loads(log.decode('utf-8')))
+        except:
+            # If plain text was somehow pushed
+            parsed_logs.append({"type": "log", "content": log.decode('utf-8')})
+    return parsed_logs
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -84,7 +147,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             await asyncio.sleep(0.01)
 
     except WebSocketDisconnect:
-        print(f"Client disconnected: {session_id}")
+        # print(f"Client disconnected: {session_id}") # Common, don't spam
+        pass
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:

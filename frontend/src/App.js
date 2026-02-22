@@ -12,6 +12,8 @@ function App() {
   const [status, setStatus] = useState('IDLE');
   const [sessionId, setSessionId] = useState(null);
   const [userInput, setUserInput] = useState('');
+  const [sessions, setSessions] = useState([]);
+  const [loading, setLoading] = useState(false);
   const logContainerRef = useRef(null);
 
   // Auto-scroll logic
@@ -20,6 +22,46 @@ function App() {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
+
+  // Fetch Sessions
+  const fetchSessions = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/sessions`);
+      setSessions(response.data);
+    } catch (error) {
+      console.error('Failed to fetch sessions:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchSessions();
+  }, []);
+
+  // Load Session Logic
+  const loadSession = async (session) => {
+    setSessionId(session.id);
+    setStatus(session.status);
+    setLogs([]); // Clear previous logs first
+
+    try {
+      const logRes = await axios.get(`${API_BASE_URL}/api/sessions/${session.id}/logs`);
+      // Parse logs - they are stored as JSON strings in Redis list
+      const parsedLogs = logRes.data.map(l => {
+         // The backend already parses them in get_session_logs, so l is a dict
+         return l.content || l;
+      });
+      setLogs(parsedLogs);
+    } catch (e) {
+      console.error("Failed to load logs", e);
+    }
+  };
+
+  const startNewSession = () => {
+    setSessionId(null);
+    setTask('');
+    setLogs([]);
+    setStatus('IDLE');
+  };
 
   // WebSocket Connection
   useEffect(() => {
@@ -44,7 +86,7 @@ function App() {
           setStatus('ERROR');
         }
       } catch (e) {
-        // Only append if it's not a status JSON that failed to parse (unlikely)
+        // Fallback
         setLogs(prev => [...prev, event.data]);
       }
     };
@@ -65,6 +107,7 @@ function App() {
       return;
     }
 
+    setLoading(true);
     setLogs([]);
     setStatus('BUILDING_TEAM');
 
@@ -75,11 +118,23 @@ function App() {
         task: task
       });
 
-      setSessionId(response.data.session_id);
+      const newSid = response.data.session_id;
+      setSessionId(newSid);
+
+      // Add to session list optimistically
+      setSessions(prev => [{
+          id: newSid,
+          task: task,
+          status: 'BUILDING_TEAM',
+          created_at: Date.now() / 1000
+      }, ...prev]);
+
     } catch (error) {
       console.error('Error starting task:', error);
       setStatus('ERROR');
       setLogs(prev => [...prev, `Failed to start task: ${error.message}`]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -116,90 +171,127 @@ function App() {
   };
 
   return (
-    <div className="container">
-      <header className="header">
-        <h1>🤖 AutoGen Production App</h1>
-        <p>Autonomous Agent Team Builder & Executor</p>
-      </header>
-
-      <div className="card">
-        <h2>Configuration</h2>
-        <div className="form-group">
-          <label>OpenRouter API Key</label>
-          <input
-            type="password"
-            className="form-control"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-or-..."
-          />
+    <div className="app-container">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sidebar-header">
+          <span>Sessions</span>
+          <button className="new-chat-btn" onClick={startNewSession} style={{width:'auto', padding:'4px 8px', fontSize:'0.8rem', marginLeft:'10px'}}>+</button>
         </div>
-
-        <div className="form-group">
-          <label>Model</label>
-          <select
-            className="form-control"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          >
-            <option value="openai/gpt-4o">GPT-4o (OpenAI)</option>
-            <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet (Anthropic)</option>
-            <option value="google/gemini-pro-1.5">Gemini Pro 1.5 (Google)</option>
-            <option value="meta-llama/llama-3-70b-instruct">Llama 3 70B (Meta)</option>
-          </select>
+        <div className="session-list">
+          {sessions.map(sess => (
+            <div
+              key={sess.id}
+              className={`session-item ${sessionId === sess.id ? 'active' : ''}`}
+              onClick={() => loadSession(sess)}
+            >
+              <div style={{fontWeight: 'bold'}}>{sess.task ? sess.task.substring(0, 25) + (sess.task.length > 25 ? '...' : '') : "New Task"}</div>
+              <div className="session-time">
+                {new Date(sess.created_at * 1000).toLocaleString()}
+              </div>
+            </div>
+          ))}
+          {sessions.length === 0 && <div style={{padding:'10px', color:'#666', fontSize:'0.8rem'}}>No history yet.</div>}
         </div>
-
-        <div className="form-group">
-          <label>Task Description</label>
-          <textarea
-            className="form-control"
-            rows="4"
-            value={task}
-            onChange={(e) => setTask(e.target.value)}
-            placeholder="Describe the complex task you want the agent team to solve..."
-          />
-        </div>
-
-        <button
-          className="btn"
-          onClick={handleSubmit}
-          disabled={status === 'BUILDING_TEAM' || status === 'EXECUTING_TASK' || status === 'WAITING_FOR_INPUT'}
-        >
-          {status === 'IDLE' || status === 'COMPLETED' || status === 'ERROR' ? 'Build Team & Execute' : 'Processing...'}
-        </button>
-
-        <span className={`status-badge ${getStatusClass(status)}`} style={{marginLeft: '15px'}}>
-          {status.replace(/_/g, ' ')}
-        </span>
       </div>
 
-      <div className="card">
-        <h2>Live Execution Logs</h2>
-        <div className="terminal-window" ref={logContainerRef}>
-          {logs.length === 0 && <div style={{color: '#666', fontStyle: 'italic'}}>Waiting for execution...</div>}
-          {logs.map((log, index) => (
-            <div key={index} className="log-entry">{log}</div>
-          ))}
-        </div>
+      {/* Main Content */}
+      <div className="main-content">
+        <header className="header">
+          <h1>🤖 AutoGen Production App</h1>
+          <p>Autonomous Agent Team Builder & Executor</p>
+        </header>
 
-        {/* Interaction Area */}
-        {status === 'WAITING_FOR_INPUT' && (
-          <div style={{marginTop: '15px', borderTop: '1px solid #eee', paddingTop: '15px'}}>
-            <label style={{display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#d9534f'}}>
-              🔴 The agents are waiting for your input:
-            </label>
-            <div style={{display: 'flex', gap: '10px'}}>
+        {/* Configuration Form - Only show if not viewing a running session history or creating new */}
+        {(!sessionId) && (
+          <div className="card">
+            <h2>New Task Configuration</h2>
+            <div className="form-group">
+              <label>OpenRouter API Key</label>
+              <input
+                type="password"
+                className="form-control"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-or-..."
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Model (OpenRouter ID)</label>
               <input
                 type="text"
                 className="form-control"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSendReply()}
-                placeholder="Type your response here..."
-                autoFocus
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="e.g. openai/gpt-4o or anthropic/claude-3.5-sonnet"
               />
-              <button className="btn" onClick={handleSendReply}>Send</button>
             </div>
+
+            <div className="form-group">
+              <label>Task Description</label>
+              <textarea
+                className="form-control"
+                rows="4"
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                placeholder="Describe the complex task you want the agent team to solve..."
+              />
+            </div>
+
+            <button
+              className="btn"
+              onClick={handleSubmit}
+              disabled={loading}
+            >
+              {loading ? 'Starting...' : 'Build Team & Execute'}
+            </button>
+          </div>
+        )}
+
+        {/* Live Logs - Show if session active */}
+        {sessionId && (
+          <div className="card">
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: '10px'}}>
+              <h2>Execution Logs</h2>
+              <span className={`status-badge ${getStatusClass(status)}`}>
+                {status.replace(/_/g, ' ')}
+              </span>
+            </div>
+
+            <div className="terminal-window" ref={logContainerRef}>
+              {logs.length === 0 && <div style={{color: '#666', fontStyle: 'italic'}}>Waiting for logs...</div>}
+              {logs.map((log, index) => (
+                <div key={index} className="log-entry">{log}</div>
+              ))}
+            </div>
+
+            {/* Interaction Area */}
+            {status === 'WAITING_FOR_INPUT' && (
+              <div style={{marginTop: '15px', borderTop: '1px solid #eee', paddingTop: '15px'}}>
+                <label style={{display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#d9534f'}}>
+                  🔴 The agents are waiting for your input:
+                </label>
+                <div style={{display: 'flex', gap: '10px'}}>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={userInput}
+                    onChange={(e) => setUserInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSendReply()}
+                    placeholder="Type your response here..."
+                    autoFocus
+                  />
+                  <button className="btn" onClick={handleSendReply}>Send</button>
+                </div>
+              </div>
+            )}
+
+            {status === 'COMPLETED' && (
+                <div style={{marginTop: '10px', textAlign: 'center'}}>
+                    <button className="btn" onClick={startNewSession}>Start New Task</button>
+                </div>
+            )}
           </div>
         )}
       </div>

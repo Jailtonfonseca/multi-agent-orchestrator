@@ -18,7 +18,7 @@ redis_client = redis.Redis(host='redis', port=6379, db=0)
 
 class RedisOutputRedirector(io.StringIO):
     """
-    Redirects stdout to a Redis Pub/Sub channel.
+    Redirects stdout to a Redis Pub/Sub channel AND saves to a persistent Redis list.
     """
     def __init__(self, session_id):
         super().__init__()
@@ -28,12 +28,23 @@ class RedisOutputRedirector(io.StringIO):
         if s.strip():
             msg = {
                 "type": "log",
-                "content": s
+                "content": s,
+                "timestamp": time.time()
             }
+            msg_json = json.dumps(msg)
+
+            # Publish for real-time subscribers
             try:
-                redis_client.publish(self.session_id, json.dumps(msg))
-            except Exception as e:
+                redis_client.publish(self.session_id, msg_json)
+            except Exception:
                 pass
+
+            # Persist for history (RPUSH to list logs:{session_id})
+            try:
+                redis_client.rpush(f"logs:{self.session_id}", msg_json)
+            except Exception:
+                pass
+
         return len(s)
 
 class InteractiveUserProxy(autogen.UserProxyAgent):
@@ -51,15 +62,17 @@ class InteractiveUserProxy(autogen.UserProxyAgent):
         """
         Overrides the default input method to wait for a message on the Redis channel.
         """
-        # Publish a specific status so the frontend knows input is needed
-        # We also print the prompt so it shows up in the logs
         print(f"WAITING FOR USER INPUT: {prompt}")
 
         status_msg = {
             "type": "status",
             "content": "WAITING_FOR_INPUT"
         }
-        redis_client.publish(self.session_id, json.dumps(status_msg))
+        msg_json = json.dumps(status_msg)
+
+        # Publish and Persist Status
+        redis_client.publish(self.session_id, msg_json)
+        redis_client.rpush(f"logs:{self.session_id}", msg_json)
 
         # Subscribe to the input channel
         pubsub = self.redis_sub.pubsub()
@@ -70,8 +83,12 @@ class InteractiveUserProxy(autogen.UserProxyAgent):
             for message in pubsub.listen():
                 if message['type'] == 'message':
                     user_input = message['data'].decode('utf-8')
+
                     # Reset status to Executing
-                    redis_client.publish(self.session_id, json.dumps({"type": "status", "content": "EXECUTING_TASK"}))
+                    executing_msg = json.dumps({"type": "status", "content": "EXECUTING_TASK"})
+                    redis_client.publish(self.session_id, executing_msg)
+                    redis_client.rpush(f"logs:{self.session_id}", executing_msg)
+
                     return user_input
         finally:
             pubsub.unsubscribe(self.input_channel)
@@ -87,9 +104,23 @@ def create_team_and_execute(session_id, task, api_key, model):
     # Create temp config file
     config_filename = f"OAI_{session_id}.json"
 
+    # Store session metadata in Redis Hash
+    session_data = {
+        "id": session_id,
+        "task": task[:50] + "..." if len(task) > 50 else task,
+        "model": model,
+        "created_at": time.time(),
+        "status": "BUILDING_TEAM"
+    }
+    redis_client.hset(f"session:{session_id}", mapping=session_data)
+    # Add to list of all sessions for easy retrieval
+    redis_client.lpush("all_sessions", session_id)
+
     try:
         # Publish START status
-        redis_client.publish(session_id, json.dumps({"type": "status", "content": "BUILDING_TEAM"}))
+        start_msg = json.dumps({"type": "status", "content": "BUILDING_TEAM"})
+        redis_client.publish(session_id, start_msg)
+        redis_client.rpush(f"logs:{session_id}", start_msg)
 
         output_redirector = RedisOutputRedirector(session_id)
 
@@ -127,27 +158,13 @@ def create_team_and_execute(session_id, task, api_key, model):
                 print(f"AgentBuilder failed: {build_err}")
                 raise build_err
 
-            # Publish EXECUTION status
-            redis_client.publish(session_id, json.dumps({"type": "status", "content": "EXECUTING_TASK"}))
-            print(f"Team built with {len(agent_list)} agents. Starting conversation...")
+            # Update Status
+            redis_client.hset(f"session:{session_id}", "status", "EXECUTING_TASK")
+            exec_msg = json.dumps({"type": "status", "content": "EXECUTING_TASK"})
+            redis_client.publish(session_id, exec_msg)
+            redis_client.rpush(f"logs:{session_id}", exec_msg)
 
-            # Setup GroupChat with Interactive Proxy
-            # human_input_mode="ALWAYS" will trigger get_human_input every time it's the user's turn
-            # or we can set it to trigger on specific conditions.
-            # For true interactivity, "ALWAYS" or "TERMINATE" is best.
-            # But "ALWAYS" asks after EVERY agent message, which is annoying.
-            # Let's try "NEVER" first but allow interrupt? No, "NEVER" skips input.
-            # "TERMINATE" asks for input only if termination condition met?
-            # Ideally, we want the user to be part of the loop.
-            # Let's use "ALWAYS" so the user acts as a moderator, OR use "TERMINATE" to only step in at the end.
-            # Given the user wants "interaction", "ALWAYS" is safest but chatty.
-            # A better UX is "TERMINATE" combined with a special check.
-            # However, `AgentBuilder` agents might not loop back to user often.
-            # Let's stick with "NEVER" for the *automated* flow, but that defeats the purpose.
-            # The user explicitly said "I have no interaction".
-            # So we MUST allow input. "TERMINATE" is a good middle ground:
-            # It runs until an agent says "TERMINATE", then asks user "Do you want to continue?".
-            # If user types something, it continues.
+            print(f"Team built with {len(agent_list)} agents. Starting conversation...")
 
             user_proxy = InteractiveUserProxy(
                 session_id=session_id,
@@ -173,12 +190,17 @@ def create_team_and_execute(session_id, task, api_key, model):
 
             user_proxy.initiate_chat(manager, message=task)
 
-        # Publish COMPLETED status
-        redis_client.publish(session_id, json.dumps({"type": "status", "content": "COMPLETED"}))
+        # Complete
+        redis_client.hset(f"session:{session_id}", "status", "COMPLETED")
+        comp_msg = json.dumps({"type": "status", "content": "COMPLETED"})
+        redis_client.publish(session_id, comp_msg)
+        redis_client.rpush(f"logs:{session_id}", comp_msg)
 
     except Exception as e:
-        error_msg = {"type": "error", "content": str(e)}
-        redis_client.publish(session_id, json.dumps(error_msg))
+        redis_client.hset(f"session:{session_id}", "status", "ERROR")
+        error_msg = json.dumps({"type": "error", "content": str(e)})
+        redis_client.publish(session_id, error_msg)
+        redis_client.rpush(f"logs:{session_id}", error_msg)
     finally:
         if os.path.exists(config_filename):
             try:
