@@ -135,6 +135,7 @@ function App() {
     // Get API Key from localStorage based on provider
     const apiKey = localStorage.getItem(`key_${provider}`);
     const systemMessage = localStorage.getItem('system_message');
+    const tavilyKey = localStorage.getItem('key_tavily'); // Retrieve Tavily Key
 
     if (!apiKey) {
       alert(`Please set your API Key for ${provider} in Settings first.`);
@@ -157,7 +158,8 @@ function App() {
         model: model,
         task: task,
         provider: provider,
-        system_message: systemMessage
+        system_message: systemMessage,
+        tavily_key: tavilyKey // Pass Tavily key
       });
 
       const newSid = response.data.session_id;
@@ -269,7 +271,6 @@ function App() {
                     <option value="openai">OpenAI (Official)</option>
                     <option value="groq">Groq (Fast Inference)</option>
                     <option value="deepseek">DeepSeek (Official)</option>
-                    {/* <option value="anthropic">Anthropic (Claude)</option> */}
                   </select>
                 </div>
 

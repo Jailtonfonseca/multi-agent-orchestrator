@@ -7,7 +7,8 @@ function Settings({ onBack }) {
     groq: '',
     anthropic: '',
     deepseek: '',
-    gemini: ''
+    gemini: '',
+    tavily: ''
   });
 
   const [systemMessage, setSystemMessage] = useState('');
@@ -20,7 +21,8 @@ function Settings({ onBack }) {
       groq: localStorage.getItem('key_groq') || '',
       anthropic: localStorage.getItem('key_anthropic') || '',
       deepseek: localStorage.getItem('key_deepseek') || '',
-      gemini: localStorage.getItem('key_gemini') || ''
+      gemini: localStorage.getItem('key_gemini') || '',
+      tavily: localStorage.getItem('key_tavily') || ''
     });
     setSystemMessage(localStorage.getItem('system_message') || '');
   }, []);
@@ -55,7 +57,7 @@ function Settings({ onBack }) {
         />
       </div>
 
-      <h3>API Keys</h3>
+      <h3>API Keys (LLM Providers)</h3>
 
       <div className="form-group">
         <label>OpenRouter</label>
@@ -101,21 +103,18 @@ function Settings({ onBack }) {
         />
       </div>
 
-      {/* Note: Anthropic and Gemini often require specific client libs or proxies.
-          For now, we store them, but backend support depends on implementation. */}
-
-      {/*
+      <h3>Tools</h3>
       <div className="form-group">
-        <label>Anthropic (Claude)</label>
+        <label>Tavily Search API (Recommended)</label>
         <input
           type="password"
           className="form-control"
-          value={keys.anthropic}
-          onChange={(e) => handleChange('anthropic', e.target.value)}
-          placeholder="sk-ant-..."
+          value={keys.tavily}
+          onChange={(e) => handleChange('tavily', e.target.value)}
+          placeholder="tvly-..."
         />
+        <small style={{color:'#666'}}>Get a free key at <a href="https://tavily.com" target="_blank" rel="noreferrer">tavily.com</a>. If not provided, DuckDuckGo will be used (less reliable).</small>
       </div>
-       */}
 
       <div style={{marginTop: '20px', color: '#666', fontSize: '0.9rem'}}>
         Keys are stored locally in your browser.

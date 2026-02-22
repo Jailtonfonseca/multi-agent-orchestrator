@@ -10,6 +10,8 @@ from celery import Celery
 import autogen
 from autogen.agentchat.contrib.agent_builder import AgentBuilder
 from duckduckgo_search import DDGS
+import requests
+from tavily import TavilyClient
 
 # Configure Celery
 app = Celery('autogen_tasks', broker='redis://redis:6379/0', backend='redis://redis:6379/0')
@@ -18,16 +20,32 @@ app = Celery('autogen_tasks', broker='redis://redis:6379/0', backend='redis://re
 redis_client = redis.Redis(host='redis', port=6379, db=0)
 
 # --- TOOLS ---
-def search_web(query: str) -> str:
+def search_web(query: str, tavily_key: str = None) -> str:
     """
-    Searches the web using DuckDuckGo and returns the top 5 results with snippets.
-    Useful for finding real-time information, news, documentation, or facts.
+    Searches the web for real-time information.
+    Prioritizes Tavily API if a key is provided, otherwise falls back to DuckDuckGo.
     """
+    if tavily_key and len(tavily_key) > 5:
+        try:
+            tavily = TavilyClient(api_key=tavily_key)
+            response = tavily.search(query=query, search_depth="basic", max_results=5)
+            results = response.get("results", [])
+            if not results:
+                return "No results found (Tavily)."
+
+            formatted_results = []
+            for r in results:
+                formatted_results.append(f"Title: {r.get('title')}\nURL: {r.get('url')}\nContent: {r.get('content')}\n---")
+            return "\n".join(formatted_results)
+        except Exception as e:
+            return f"Error with Tavily Search: {str(e)}. Falling back to DuckDuckGo..."
+
+    # Fallback to DuckDuckGo
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
             if not results:
-                return "No results found."
+                return "No results found (DuckDuckGo)."
 
             formatted_results = []
             for r in results:
@@ -36,6 +54,32 @@ def search_web(query: str) -> str:
             return "\n".join(formatted_results)
     except Exception as e:
         return f"Error searching web: {str(e)}"
+
+def get_crypto_price(symbol: str) -> str:
+    """
+    Fetches the current price of a cryptocurrency from CoinGecko.
+    Args:
+        symbol: The ticker symbol (e.g., 'bitcoin', 'ethereum', 'solana').
+    """
+    try:
+        # CoinGecko uses IDs, not symbols for free endpoint, but simple search helps
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": symbol.lower(),
+            "vs_currencies": "usd",
+            "include_24hr_change": "true"
+        }
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+
+        if symbol.lower() in data:
+            price = data[symbol.lower()]["usd"]
+            change = data[symbol.lower()].get("usd_24h_change", 0)
+            return f"The current price of {symbol} is ${price} USD ({change:.2f}% in 24h)."
+        else:
+            return f"Could not find price for '{symbol}'. Try using the full name (e.g., 'bitcoin' instead of 'BTC')."
+    except Exception as e:
+        return f"Error fetching crypto price: {str(e)}"
 
 class RedisOutputRedirector(io.StringIO):
     """
@@ -108,7 +152,7 @@ class InteractiveUserProxy(autogen.UserProxyAgent):
         return ""
 
 @app.task(name="worker.create_team_and_execute")
-def create_team_and_execute(session_id, task, api_key, model, provider="openrouter", system_message=None):
+def create_team_and_execute(session_id, task, api_key, model, provider="openrouter", system_message=None, tavily_key=None):
     """
     Celery task to run the AutoGen process.
     """
@@ -140,19 +184,6 @@ def create_team_and_execute(session_id, task, api_key, model, provider="openrout
             base_url = "https://api.groq.com/openai/v1"
         elif provider == "deepseek":
             base_url = "https://api.deepseek.com"
-        elif provider == "gemini":
-            # AutoGen supports Gemini via its own library or OpenAI compatibility?
-            # Usually better to use VertexAI/Gemini lib directly or via OpenRouter proxy.
-            # Assuming OpenAI compatible endpoint if user provides base_url, otherwise standard.
-            # For simplicity, if provider is 'gemini' but user is using API key, likely needs specialized config.
-            # Let's stick to standard OpenAI compatible for now as fallback.
-            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        elif provider == "anthropic":
-             # Anthropic usually requires `api_type="anthropic"` in older versions or use litellm.
-             # However, AgentBuilder heavily relies on OpenAI format.
-             # Best to use OpenRouter for Anthropic if not using specialized adapter.
-             # Let's assume standard base_url if provided, else None.
-             pass
 
         llm_config_entry = {
             "model": model,
@@ -183,7 +214,8 @@ def create_team_and_execute(session_id, task, api_key, model, provider="openrout
             system_prompt_hint = (
                 "You are a pragmatic team builder. "
                 "The agents you create must be grounded in reality. "
-                "You have access to a 'search_web' tool. Prefer using this tool to find real-time information rather than assuming facts. "
+                "You have access to a 'search_web' tool (powered by Tavily/DuckDuckGo) and 'get_crypto_price' tool. "
+                "Prefer using these tools to find real-time information rather than assuming facts. "
                 "Agents must use the provided python environment which has pandas, numpy, requests, duckduckgo-search, and matplotlib pre-installed. "
             )
 
@@ -221,19 +253,35 @@ def create_team_and_execute(session_id, task, api_key, model, provider="openrout
                 is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
             )
 
-            user_proxy.register_for_execution(name="search_web")(search_web)
+            # Wrapper for search_web to inject API key without exposing it to the agent
+            def search_web_wrapper(query: str) -> str:
+                return search_web(query, tavily_key=tavily_key)
+
+            # Register for User Proxy (Executor)
+            user_proxy.register_for_execution(name="search_web")(search_web_wrapper)
+            user_proxy.register_for_execution(name="get_crypto_price")(get_crypto_price)
 
             for agent in agent_list:
                 # IMPORTANT: Check for llm_config to avoid crash on proxy agents
                 if getattr(agent, 'llm_config', False):
+                    # Register Search
                     autogen.agentchat.register_function(
-                        search_web,
+                        search_web_wrapper,
                         caller=agent,
                         executor=user_proxy,
                         name="search_web",
-                        description="Searches the web using DuckDuckGo. Use this to find real-time information, check facts, or get documentation."
+                        description="Searches the web for real-time information. Use this to find news, articles, documentation, or verify facts."
                     )
-                    print(f"Registered tool 'search_web' for agent: {agent.name}")
+
+                    # Register Crypto Price
+                    autogen.agentchat.register_function(
+                        get_crypto_price,
+                        caller=agent,
+                        executor=user_proxy,
+                        name="get_crypto_price",
+                        description="Gets the current price of a cryptocurrency (e.g. 'bitcoin', 'ethereum') in USD."
+                    )
+                    print(f"Registered tools for agent: {agent.name}")
                 else:
                      print(f"Skipping tool registration for agent '{agent.name}' (no llm_config)")
 

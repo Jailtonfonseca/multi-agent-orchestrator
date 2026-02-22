@@ -31,6 +31,7 @@ class TaskRequest(BaseModel):
     model: str
     provider: str = "openrouter" # Default
     system_message: Optional[str] = None
+    tavily_key: Optional[str] = None
 
 class ChatReply(BaseModel):
     session_id: str
@@ -58,7 +59,8 @@ async def start_task(request: TaskRequest):
         api_key=request.api_key,
         model=request.model,
         provider=request.provider,
-        system_message=request.system_message
+        system_message=request.system_message,
+        tavily_key=request.tavily_key
     )
 
     return {"session_id": session_id, "task_id": task_result.id}
