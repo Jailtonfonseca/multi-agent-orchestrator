@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import './index.css';
 
 const API_BASE_URL = 'http://localhost:8000';
 
@@ -10,6 +11,7 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState('IDLE');
   const [sessionId, setSessionId] = useState(null);
+  const [userInput, setUserInput] = useState('');
   const logContainerRef = useRef(null);
 
   // Auto-scroll logic
@@ -23,9 +25,7 @@ function App() {
   useEffect(() => {
     if (!sessionId) return;
 
-    // Use ws or wss based on protocol
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // For local docker dev, port 8000 is exposed
     const ws = new WebSocket(`${protocol}//localhost:8000/ws/${sessionId}`);
 
     ws.onopen = () => {
@@ -44,7 +44,7 @@ function App() {
           setStatus('ERROR');
         }
       } catch (e) {
-        // Handle plain text or fallback
+        // Only append if it's not a status JSON that failed to parse (unlikely)
         setLogs(prev => [...prev, event.data]);
       }
     };
@@ -66,7 +66,7 @@ function App() {
     }
 
     setLogs([]);
-    setStatus('BUILDING_TEAM'); // Optimistic update
+    setStatus('BUILDING_TEAM');
 
     try {
       const response = await axios.post(`${API_BASE_URL}/api/start-task`, {
@@ -83,11 +83,32 @@ function App() {
     }
   };
 
+  const handleSendReply = async () => {
+    if (!userInput.trim()) return;
+
+    const currentInput = userInput;
+    // Optimistic UI update
+    setLogs(prev => [...prev, `\nYou: ${currentInput}\n`]);
+    setUserInput('');
+
+    try {
+      await axios.post(`${API_BASE_URL}/api/reply`, {
+        session_id: sessionId,
+        message: currentInput
+      });
+    } catch (error) {
+      console.error('Error sending reply:', error);
+      alert('Failed to send reply');
+      setUserInput(currentInput);
+    }
+  };
+
   const getStatusClass = (status) => {
     switch (status) {
       case 'IDLE': return 'status-idle';
       case 'BUILDING_TEAM': return 'status-building';
       case 'EXECUTING_TASK': return 'status-executing';
+      case 'WAITING_FOR_INPUT': return 'status-waiting';
       case 'COMPLETED': return 'status-completed';
       case 'ERROR': return 'status-error';
       default: return 'status-idle';
@@ -142,13 +163,13 @@ function App() {
         <button
           className="btn"
           onClick={handleSubmit}
-          disabled={status === 'BUILDING_TEAM' || status === 'EXECUTING_TASK'}
+          disabled={status === 'BUILDING_TEAM' || status === 'EXECUTING_TASK' || status === 'WAITING_FOR_INPUT'}
         >
           {status === 'IDLE' || status === 'COMPLETED' || status === 'ERROR' ? 'Build Team & Execute' : 'Processing...'}
         </button>
 
         <span className={`status-badge ${getStatusClass(status)}`} style={{marginLeft: '15px'}}>
-          {status.replace('_', ' ')}
+          {status.replace(/_/g, ' ')}
         </span>
       </div>
 
@@ -160,6 +181,27 @@ function App() {
             <div key={index} className="log-entry">{log}</div>
           ))}
         </div>
+
+        {/* Interaction Area */}
+        {status === 'WAITING_FOR_INPUT' && (
+          <div style={{marginTop: '15px', borderTop: '1px solid #eee', paddingTop: '15px'}}>
+            <label style={{display: 'block', marginBottom: '5px', fontWeight: 'bold', color: '#d9534f'}}>
+              🔴 The agents are waiting for your input:
+            </label>
+            <div style={{display: 'flex', gap: '10px'}}>
+              <input
+                type="text"
+                className="form-control"
+                value={userInput}
+                onChange={(e) => setUserInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSendReply()}
+                placeholder="Type your response here..."
+                autoFocus
+              />
+              <button className="btn" onClick={handleSendReply}>Send</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

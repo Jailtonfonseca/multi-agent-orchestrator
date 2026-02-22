@@ -29,6 +29,10 @@ class TaskRequest(BaseModel):
     api_key: str
     model: str
 
+class ChatReply(BaseModel):
+    session_id: str
+    message: str
+
 @app.post("/api/start-task")
 async def start_task(request: TaskRequest):
     """
@@ -46,6 +50,16 @@ async def start_task(request: TaskRequest):
     )
 
     return {"session_id": session_id, "task_id": task_result.id}
+
+@app.post("/api/reply")
+async def send_reply(reply: ChatReply):
+    """
+    Sends a user reply to the waiting AutoGen session via Redis.
+    """
+    # Publish the user's input to the specific input channel for this session
+    channel = f"input_{reply.session_id}"
+    redis_client.publish(channel, reply.message)
+    return {"status": "sent"}
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -65,7 +79,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         await websocket.send_text(data_str)
                 except Exception as e:
                     print(f"Error sending message: {e}")
-                    # If send fails, client is likely gone
                     break
 
             await asyncio.sleep(0.01)
@@ -77,7 +90,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     finally:
         try:
             pubsub.unsubscribe(session_id)
-            # await websocket.close() # Might already be closed
+            # await websocket.close()
         except:
             pass
 

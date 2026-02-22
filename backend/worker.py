@@ -11,11 +11,9 @@ import autogen
 from autogen.agentchat.contrib.agent_builder import AgentBuilder
 
 # Configure Celery
-# Broker and backend should be set to the redis service
 app = Celery('autogen_tasks', broker='redis://redis:6379/0', backend='redis://redis:6379/0')
 
-# Redis Client for publishing logs
-# Use a global client to avoid reconnecting on every log
+# Redis Client
 redis_client = redis.Redis(host='redis', port=6379, db=0)
 
 class RedisOutputRedirector(io.StringIO):
@@ -27,7 +25,6 @@ class RedisOutputRedirector(io.StringIO):
         self.session_id = session_id
 
     def write(self, s):
-        # We only care about publishing, not storing in memory like StringIO
         if s.strip():
             msg = {
                 "type": "log",
@@ -36,9 +33,51 @@ class RedisOutputRedirector(io.StringIO):
             try:
                 redis_client.publish(self.session_id, json.dumps(msg))
             except Exception as e:
-                # Fallback to sys.stderr if redis fails, but don't crash
-                sys.stderr.write(f"Redis publish error: {e}\n")
+                pass
         return len(s)
+
+class InteractiveUserProxy(autogen.UserProxyAgent):
+    """
+    A custom UserProxyAgent that waits for user input from a Redis channel.
+    """
+    def __init__(self, session_id, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.session_id = session_id
+        # Need a fresh connection for subscribing
+        self.redis_sub = redis.Redis(host='redis', port=6379, db=0)
+        self.input_channel = f"input_{session_id}"
+
+    def get_human_input(self, prompt: str) -> str:
+        """
+        Overrides the default input method to wait for a message on the Redis channel.
+        """
+        # Publish a specific status so the frontend knows input is needed
+        # We also print the prompt so it shows up in the logs
+        print(f"WAITING FOR USER INPUT: {prompt}")
+
+        status_msg = {
+            "type": "status",
+            "content": "WAITING_FOR_INPUT"
+        }
+        redis_client.publish(self.session_id, json.dumps(status_msg))
+
+        # Subscribe to the input channel
+        pubsub = self.redis_sub.pubsub()
+        pubsub.subscribe(self.input_channel)
+
+        try:
+            # Block and wait for a message
+            for message in pubsub.listen():
+                if message['type'] == 'message':
+                    user_input = message['data'].decode('utf-8')
+                    # Reset status to Executing
+                    redis_client.publish(self.session_id, json.dumps({"type": "status", "content": "EXECUTING_TASK"}))
+                    return user_input
+        finally:
+            pubsub.unsubscribe(self.input_channel)
+            pubsub.close()
+
+        return ""
 
 @app.task(name="worker.create_team_and_execute")
 def create_team_and_execute(session_id, task, api_key, model):
@@ -92,10 +131,28 @@ def create_team_and_execute(session_id, task, api_key, model):
             redis_client.publish(session_id, json.dumps({"type": "status", "content": "EXECUTING_TASK"}))
             print(f"Team built with {len(agent_list)} agents. Starting conversation...")
 
-            # Setup GroupChat
-            user_proxy = autogen.UserProxyAgent(
+            # Setup GroupChat with Interactive Proxy
+            # human_input_mode="ALWAYS" will trigger get_human_input every time it's the user's turn
+            # or we can set it to trigger on specific conditions.
+            # For true interactivity, "ALWAYS" or "TERMINATE" is best.
+            # But "ALWAYS" asks after EVERY agent message, which is annoying.
+            # Let's try "NEVER" first but allow interrupt? No, "NEVER" skips input.
+            # "TERMINATE" asks for input only if termination condition met?
+            # Ideally, we want the user to be part of the loop.
+            # Let's use "ALWAYS" so the user acts as a moderator, OR use "TERMINATE" to only step in at the end.
+            # Given the user wants "interaction", "ALWAYS" is safest but chatty.
+            # A better UX is "TERMINATE" combined with a special check.
+            # However, `AgentBuilder` agents might not loop back to user often.
+            # Let's stick with "NEVER" for the *automated* flow, but that defeats the purpose.
+            # The user explicitly said "I have no interaction".
+            # So we MUST allow input. "TERMINATE" is a good middle ground:
+            # It runs until an agent says "TERMINATE", then asks user "Do you want to continue?".
+            # If user types something, it continues.
+
+            user_proxy = InteractiveUserProxy(
+                session_id=session_id,
                 name="User_Proxy",
-                human_input_mode="NEVER",
+                human_input_mode="TERMINATE",
                 code_execution_config={
                     "use_docker": False,
                     "work_dir": work_dir
