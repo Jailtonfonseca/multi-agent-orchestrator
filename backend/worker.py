@@ -200,14 +200,17 @@ def create_team_and_execute(session_id, task, api_key, model):
 
             # Register for Assistants (Callers)
             for agent in agent_list:
-                autogen.agentchat.register_function(
-                    search_web,
-                    caller=agent,
-                    executor=user_proxy,
-                    name="search_web",
-                    description="Searches the web using DuckDuckGo. Use this to find real-time information, check facts, or get documentation."
-                )
-                print(f"Registered tool 'search_web' for agent: {agent.name}")
+                if agent.llm_config:
+                    autogen.agentchat.register_function(
+                        search_web,
+                        caller=agent,
+                        executor=user_proxy,
+                        name="search_web",
+                        description="Searches the web using DuckDuckGo. Use this to find real-time information, check facts, or get documentation."
+                    )
+                    print(f"Registered tool 'search_web' for agent: {agent.name}")
+                else:
+                    print(f"Skipping tool registration for agent '{agent.name}' (no llm_config)")
 
             print("Starting conversation...")
 
