@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useNavigate } from 'react-router-dom';
 import './index.css';
 import Settings from './Settings';
 
@@ -21,17 +20,6 @@ function App() {
   const [provider, setProvider] = useState('openrouter');
 
   const logContainerRef = useRef(null);
-  const navigate = useNavigate();
-
-  // Axios interceptor for Auth
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    } else {
-      navigate('/login');
-    }
-  }, [navigate]);
 
   useEffect(() => {
     const savedModel = localStorage.getItem('last_model');
@@ -67,7 +55,6 @@ function App() {
       const response = await axios.get(`${API_BASE_URL}/api/sessions`);
       setSessions(response.data);
     } catch (error) {
-      if (error.response?.status === 401) navigate('/login');
       console.error('Failed to fetch sessions:', error);
     }
   };
@@ -103,15 +90,10 @@ function App() {
     if (!sessionId) return;
     try {
       await axios.post(`${API_BASE_URL}/api/stop-task/${sessionId}`);
-      setStatus('STOPPING'); // Optimistic
+      setStatus('STOPPING');
     } catch (e) {
       console.error("Failed to stop", e);
     }
-  };
-
-  const logout = () => {
-    localStorage.removeItem('token');
-    navigate('/login');
   };
 
   useEffect(() => {
@@ -247,11 +229,8 @@ function App() {
           ))}
         </div>
         <div style={{borderTop:'1px solid #333', padding:'10px'}}>
-            <button className="settings-btn" onClick={() => setShowSettings(!showSettings)} style={{width:'100%', margin:'0 0 10px 0'}}>
+            <button className="settings-btn" onClick={() => setShowSettings(!showSettings)} style={{width:'100%', margin:'0'}}>
             ⚙️ Settings
-            </button>
-            <button className="settings-btn" onClick={logout} style={{width:'100%', margin:'0', border:'1px solid #d9534f', color:'#d9534f'}}>
-            Logout
             </button>
         </div>
       </div>

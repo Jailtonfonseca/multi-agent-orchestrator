@@ -1,6 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlmodel import Session, select
 from typing import List, Optional
@@ -10,11 +9,10 @@ import asyncio
 import time
 import os
 import redis
-import redis.asyncio as aioredis # Async Redis for WebSockets
+import redis.asyncio as aioredis
 
 from database import create_db_and_tables, get_session
-from models import User, Session as DBSession, Log
-from auth import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from models import Session as DBSession, Log
 from worker import create_team_and_execute, app as celery_app
 
 app = FastAPI()
@@ -29,7 +27,6 @@ def on_startup():
         print(f"DB Init Error: {e}")
 
 # CORS
-# Explicit origins are safer and often required for credentials
 origins = [
     "http://localhost:3000",
     "http://localhost:3001",
@@ -45,42 +42,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Sync Redis for standard endpoints
 redis_client = redis.Redis(host='redis', port=6379, db=0)
-# Async Redis for WebSockets
 aioredis_client = aioredis.Redis(host='redis', port=6379, db=0)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-# --- Dependencies ---
-# Changed to sync def to allow threading if needed, but jose is pure python.
-# DB access inside here is sync, so this dependency effectively blocks if used in async def.
-# Used in def endpoints -> runs in threadpool. OK.
-def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
-    from jose import jwt, JWTError
-    from auth import SECRET_KEY, ALGORITHM
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-    user = session.exec(select(User).where(User.username == username)).first()
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return user
-
 # --- Pydantic Models ---
-class UserCreate(BaseModel):
-    username: str
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
 class TaskRequest(BaseModel):
     task: str
     api_key: str
@@ -100,49 +65,17 @@ class SessionResponse(BaseModel):
     created_at: float
     status: str
 
-# --- Auth Routes ---
-# Changed to 'def' to support sync DB session
-@app.post("/auth/register", response_model=Token)
-def register(user: UserCreate, session: Session = Depends(get_session)):
-    existing_user = session.exec(select(User).where(User.username == user.username)).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-
-    hashed_password = get_password_hash(user.password)
-    db_user = User(username=user.username, hashed_password=hashed_password)
-    session.add(db_user)
-    session.commit()
-    session.refresh(db_user)
-
-    access_token = create_access_token(data={"sub": user.username})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/auth/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
-    user = session.exec(select(User).where(User.username == form_data.username)).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
-
-    access_token = create_access_token(data={"sub": user.username})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.get("/auth/me")
-def read_users_me(current_user: User = Depends(get_current_user)):
-    return {"username": current_user.username}
-
 # --- API Routes ---
-# Changed to 'def' to allow blocking I/O in threadpool
+
 @app.post("/api/start-task")
 def start_task(
     request: TaskRequest,
-    current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session)
 ):
     session_id = str(uuid.uuid4())
 
     db_sess = DBSession(
         id=session_id,
-        user_id=current_user.id,
         task=request.task,
         model=request.model,
         status="BUILDING_TEAM",
@@ -164,13 +97,12 @@ def start_task(
     return {"session_id": session_id, "task_id": task_result.id}
 
 @app.post("/api/stop-task/{session_id}")
-def stop_task(session_id: str, current_user: User = Depends(get_current_user)):
-    # Sync redis client is fine here
+def stop_task(session_id: str):
     redis_client.publish(f"input_{session_id}", "TERMINATE")
     return {"status": "stop_signal_sent"}
 
 @app.post("/api/reply")
-def send_reply(reply: ChatReply, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+def send_reply(reply: ChatReply, session: Session = Depends(get_session)):
     channel = f"input_{reply.session_id}"
     redis_client.publish(channel, reply.message)
 
@@ -186,20 +118,20 @@ def send_reply(reply: ChatReply, current_user: User = Depends(get_current_user),
     return {"status": "sent"}
 
 @app.get("/api/sessions", response_model=List[SessionResponse])
-def get_sessions(current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
-    user_sessions = session.exec(select(DBSession).where(DBSession.user_id == current_user.id).order_by(DBSession.created_at.desc())).all()
-    return user_sessions
+def get_sessions(session: Session = Depends(get_session)):
+    # Return all sessions, sorted by date
+    all_sessions = session.exec(select(DBSession).order_by(DBSession.created_at.desc())).all()
+    return all_sessions
 
 @app.get("/api/sessions/{session_id}/logs")
-def get_session_logs(session_id: str, current_user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+def get_session_logs(session_id: str, session: Session = Depends(get_session)):
     db_sess = session.get(DBSession, session_id)
-    if not db_sess or db_sess.user_id != current_user.id:
+    if not db_sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
     logs = session.exec(select(Log).where(Log.session_id == session_id).order_by(Log.timestamp)).all()
     return [{"type": l.type, "content": l.content, "timestamp": l.timestamp} for l in logs]
 
-# WebSocket must remain async def
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
@@ -208,7 +140,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     try:
         while True:
-            # Async get_message
             message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
 
             if message:
@@ -217,7 +148,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         data_str = message['data'].decode('utf-8')
                         await websocket.send_text(data_str)
                 except Exception as e:
-                    print(f"WS Error: {e}")
                     break
 
             await asyncio.sleep(0.01)
