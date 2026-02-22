@@ -1,136 +1,131 @@
-# 🤖 AutoGen Enterprise (Microservices)
+# 🤖 AutoGen Enterprise
 
-A scalable, production-ready platform for **building and managing autonomous AI agent teams**. Describe a task in natural language and watch a team of specialized AI agents collaborate, search the web, and execute code to complete it — in real time.
-
-Built with a modern microservices architecture featuring real-time WebSocket streaming, persistent session history, human-in-the-loop interaction, and a clean React SPA.
+A scalable platform for **building and managing autonomous AI agent teams**. Describe a task in natural language and watch a team of specialized AI agents collaborate, search the web, and execute code to complete it — in real time.
 
 ---
 
-## 🌟 Key Features
+## ⚡ Quick Install
 
-| Feature | Description |
+> **Prerequisite:** [Docker Desktop](https://docs.docker.com/get-docker/) must be installed and running.
+
+### Linux / macOS
+
+```bash
+git clone https://github.com/Jailtonfonseca/multi-agent-orchestrator.git
+cd multi-agent-orchestrator
+bash install.sh
+```
+
+### Windows (Git Bash or WSL)
+
+```bash
+git clone https://github.com/Jailtonfonseca/multi-agent-orchestrator.git
+cd multi-agent-orchestrator
+bash install.sh
+```
+
+### What the installer does
+
+1. ✅ Checks Docker is installed and running
+2. 🔍 Scans for available ports (defaults: 3000, 8000, 5432, 8080)
+3. 📝 Generates `.env` and `docker-compose.override.yml` with free ports
+4. 🐳 Builds and starts all 6 containers
+5. 🏥 Waits for the backend health check to pass
+6. 🎉 Prints the access URLs
+
+After install, open the displayed URL (default: **http://localhost:3000**)
+
+---
+
+## 🗑️ Uninstall
+
+```bash
+bash uninstall.sh
+```
+
+This will:
+- Stop and remove all containers
+- Remove Docker volumes (database data is deleted)
+- Clean generated `.env` and `docker-compose.override.yml`
+- Optionally remove built Docker images
+
+---
+
+## 🔧 Manual Install (without installer)
+
+```bash
+git clone https://github.com/Jailtonfonseca/multi-agent-orchestrator.git
+cd multi-agent-orchestrator
+
+# Copy the example config
+cp .env.example .env
+
+# Build and start
+docker-compose up -d --build
+
+# Check health
+curl http://localhost:8000/health
+```
+
+Open **http://localhost:3000**
+
+---
+
+## 📖 Usage
+
+1. **⚙️ Settings** → Enter your API key for your preferred provider
+2. **✦ New Task** → Choose provider + model, describe the task
+3. **🚀 Start Task** → Watch agents build a team and execute in real time
+4. **💬 Reply** → When agents ask for input, type your reply
+
+| Provider | Example Models |
 |---|---|
-| 🤖 **Agent Team Builder** | AutoGen `AgentBuilder` automatically assembles a team of specialized agents for each task |
-| 💬 **Human-in-the-Loop** | Execution pauses when agents need input; reply directly from the UI |
-| 🌐 **Web Search** | Agents use Tavily (preferred) or DuckDuckGo for real-time web research |
-| ⚡ **Real-Time Streaming** | Logs stream instantly via WebSocket with auto-reconnect |
-| 📦 **Session History** | All sessions and logs are persisted in PostgreSQL; browse history from the sidebar |
-| 🔌 **Multi-Provider** | Works with OpenRouter, OpenAI, Groq, and DeepSeek |
+| OpenRouter | `openai/gpt-4o`, `anthropic/claude-3-opus` |
+| OpenAI | `gpt-4-turbo`, `gpt-3.5-turbo` |
+| Groq | `llama3-70b-8192` |
+| DeepSeek | `deepseek-chat` |
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-Browser (React SPA)
+Browser (React SPA :3000)
     │  REST + WebSocket
     ▼
-FastAPI Backend ──► Celery Worker ──► AutoGen AgentBuilder
-    │                   │
-    ▼                   ▼
-PostgreSQL           Redis (Broker + Pub/Sub)
+FastAPI Backend (:8000)  ──►  Celery Worker  ──►  AutoGen AgentBuilder
+    │                              │
+    ▼                              ▼
+PostgreSQL (:5432)              Redis (internal)
+    │
+    ▼
+Adminer (:8080)
 ```
 
-- **Frontend**: React 18 SPA with sidebar navigation, real-time log viewer, and WebSocket client
-- **Backend**: FastAPI — REST endpoints, WebSocket relay, session management
-- **Worker**: Celery + AutoGen — agent orchestration, tool execution, code running
-- **Storage**: PostgreSQL (sessions & logs) + Redis (message broker & pub/sub)
-- **Tools**: Adminer at `:8080` for DB inspection
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-- [Docker & Docker Compose](https://docs.docker.com/get-docker/)
-- An API key from one of the supported providers:
-  - [OpenRouter](https://openrouter.ai/keys) *(recommended — access to all models)*
-  - [OpenAI](https://platform.openai.com/api-keys)
-  - [Groq](https://console.groq.com/)
-  - [DeepSeek](https://platform.deepseek.com/)
-
-### Installation
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/Jailtonfonseca/multi-agent-orchestrator.git
-cd multi-agent-orchestrator
-
-# 2. (Optional) Copy and edit environment config
-cp .env.example .env
-
-# 3. Launch the full stack
-docker-compose up -d --build
-
-# 4. Check that all services are healthy
-docker-compose ps
-```
-
-### Open the App
-
-Navigate to **http://localhost:3000**
-
----
-
-## 📖 Usage Guide
-
-1. **Click "⚙️ Settings"** in the sidebar
-   - Enter your API key for your chosen provider
-   - Optionally add a Tavily key for better web search
-   - Optionally set a global system prompt
-
-2. **Click "✦ New Task"** in the sidebar
-   - Select your **Provider** and **Model ID** (e.g. `openai/gpt-4o`, `anthropic/claude-3-opus`)
-   - Describe what you want the agent team to accomplish
-
-3. **Start the task** — watch agents build a team and execute in real time
-   - Status transitions: `🔨 Building Team` → `⚙️ Executing Task` → `✅ Completed`
-   - If status shows `💬 Waiting for you`, type a reply to guide the agents
-
-4. **Browse history** — click any session in the sidebar to reload its full log
+| Service | Description |
+|---|---|
+| **Frontend** | React 18 SPA — sidebar, chat, real-time WebSocket logs |
+| **Backend** | FastAPI — REST API, WebSocket relay, session management |
+| **Worker** | Celery + AutoGen — agent orchestration, code execution |
+| **PostgreSQL** | Session and log persistence |
+| **Redis** | Message broker + pub/sub for real-time streaming |
+| **Adminer** | Web-based database inspector |
 
 ---
 
 ## ⚙️ Environment Variables
 
+All configurable via `.env` (auto-generated by `install.sh`):
+
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://autogen:autogen123@db:5432/autogen_db` | PostgreSQL connection string |
-| `REDIS_URL` | `redis://redis:6379/0` | Redis connection string |
-| `MAX_ROUNDS` | `12` | Max group chat rounds per task |
-| `WORKSPACES_DIR` | `/tmp/workspaces` | Directory for agent code execution |
-| `REACT_APP_API_URL` | `http://localhost:8000` | Backend URL seen by the browser |
-
----
-
-## 🔧 Technical Details
-
-### Session Persistence
-- `session` table: metadata (task, model, status, created_at)
-- `log` table: every log line with timestamp, type (`log`, `status`, `error`)
-
-### Human-in-the-Loop
-The backend uses a custom `InteractiveUserProxy` that overrides AutoGen's `get_human_input`. It pauses execution, publishes a `WAITING_FOR_INPUT` status to Redis, and blocks until a message arrives on the `input_{session_id}` channel — triggered by the frontend's `/api/reply` endpoint.
-
-### WebSocket Auto-Reconnect
-The React frontend automatically reconnects the WebSocket if the connection drops during an active task, preventing log gaps on network hiccups.
-
-### Tools Available to Agents
-| Tool | Description |
-|---|---|
-| `search_web` | Web search via Tavily or DuckDuckGo |
-| `get_crypto_price` | Live cryptocurrency prices via CoinGecko |
-| *Python executor* | Agents can write and run Python code in the worker container |
-
----
-
-## 🛡️ Security Notes
-
-> [!WARNING]
-> **Code Execution Sandbox**: Agents currently execute code inside the Worker container. For public/multi-user production deployment, implement **Docker-in-Docker** or container sandboxing to isolate agent code execution.
-
-> [!NOTE]
-> API keys are passed per-request from the browser's `localStorage` and never stored on the server. For a multi-user deployment, implement OAuth2 authentication and server-side encrypted key storage.
+| `FRONTEND_PORT` | `3000` | Port for the React app |
+| `BACKEND_PORT` | `8000` | Port for the API |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `ADMINER_PORT` | `8080` | Adminer port |
+| `MAX_ROUNDS` | `12` | Max agent chat rounds per task |
+| `POSTGRES_USER` | `autogen` | DB username |
+| `POSTGRES_PASSWORD` | `autogen123` | DB password |
 
 ---
 
@@ -142,17 +137,53 @@ The React frontend automatically reconnects the WebSocket if the connection drop
 | `POST` | `/api/reply` | Send human input to a waiting task |
 | `POST` | `/api/stop-task/{id}` | Stop a running task |
 | `GET` | `/api/sessions` | List all sessions |
-| `GET` | `/api/sessions/{id}` | Get single session metadata |
-| `GET` | `/api/sessions/{id}/logs` | Get all logs for a session |
+| `GET` | `/api/sessions/{id}` | Get single session |
+| `GET` | `/api/sessions/{id}/logs` | Get logs for a session |
 | `WS` | `/ws/{id}` | Real-time log stream |
-| `GET` | `/health` | Deep health check (Redis + DB) |
+| `GET` | `/health` | Health check (Redis + DB + Celery) |
+
+---
+
+## 🛠️ Useful Commands
+
+```bash
+# View all container logs
+docker-compose logs -f
+
+# View only worker logs
+docker-compose logs -f worker
+
+# Restart everything
+docker-compose restart
+
+# Rebuild after code changes
+docker-compose up -d --build
+
+# Stop without removing data
+docker-compose down
+
+# Full cleanup (removes data!)
+bash uninstall.sh
+```
+
+---
+
+## 🛡️ Security Notes
+
+> [!WARNING]
+> Agents execute Python code inside the Worker container without sandboxing.
+> For production, implement Docker-in-Docker isolation.
+
+> [!NOTE]
+> API keys are stored in browser localStorage and sent per-request.
+> Never stored on the server.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] **Auth**: JWT / OAuth2 for multi-user support
-- [ ] **Docker-in-Docker**: Fully isolated code execution sandbox
-- [ ] **More Tools**: File upload, image generation, database query tools
-- [ ] **Metrics**: Prometheus + Grafana dashboard
-- [ ] **CI/CD**: GitHub Actions for automated build and test
+- [ ] JWT / OAuth2 authentication
+- [ ] Docker-in-Docker code sandbox
+- [ ] File upload and image generation tools
+- [ ] Prometheus + Grafana monitoring
+- [ ] GitHub Actions CI/CD
