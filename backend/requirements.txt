@@ -8,3 +8,12 @@ celery[redis]
 python-dotenv
 openai
 requests
+numpy
+pandas
+matplotlib
+scikit-learn
+seaborn
+openpyxl
+beautifulsoup4
+lxml
+wcwidth

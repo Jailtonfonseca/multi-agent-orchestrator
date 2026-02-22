@@ -16,6 +16,27 @@ function App() {
   const [loading, setLoading] = useState(false);
   const logContainerRef = useRef(null);
 
+  // Load API Key and Model from localStorage on mount
+  useEffect(() => {
+    const savedApiKey = localStorage.getItem('openRouterApiKey');
+    const savedModel = localStorage.getItem('openRouterModel');
+    if (savedApiKey) setApiKey(savedApiKey);
+    if (savedModel) setModel(savedModel);
+  }, []);
+
+  // Save on change
+  const handleApiKeyChange = (e) => {
+    const val = e.target.value;
+    setApiKey(val);
+    localStorage.setItem('openRouterApiKey', val);
+  };
+
+  const handleModelChange = (e) => {
+    const val = e.target.value;
+    setModel(val);
+    localStorage.setItem('openRouterModel', val);
+  };
+
   // Auto-scroll logic
   useEffect(() => {
     if (logContainerRef.current) {
@@ -47,7 +68,6 @@ function App() {
       const logRes = await axios.get(`${API_BASE_URL}/api/sessions/${session.id}/logs`);
       // Parse logs - they are stored as JSON strings in Redis list
       const parsedLogs = logRes.data.map(l => {
-         // The backend already parses them in get_session_logs, so l is a dict
          return l.content || l;
       });
       setLogs(parsedLogs);
@@ -212,7 +232,7 @@ function App() {
                 type="password"
                 className="form-control"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={handleApiKeyChange}
                 placeholder="sk-or-..."
               />
             </div>
@@ -223,7 +243,7 @@ function App() {
                 type="text"
                 className="form-control"
                 value={model}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={handleModelChange}
                 placeholder="e.g. openai/gpt-4o or anthropic/claude-3.5-sonnet"
               />
             </div>

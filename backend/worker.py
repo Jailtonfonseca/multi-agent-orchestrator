@@ -39,7 +39,7 @@ class RedisOutputRedirector(io.StringIO):
             except Exception:
                 pass
 
-            # Persist for history (RPUSH to list logs:{session_id})
+            # Persist for history
             try:
                 redis_client.rpush(f"logs:{self.session_id}", msg_json)
             except Exception:
@@ -148,9 +148,23 @@ def create_team_and_execute(session_id, task, api_key, model):
             )
 
             print("Building agents based on task...")
+
+            # --- AGENT PROMPT ENGINEERING ---
+            # Inject strict instructions to discourage hallucination
+            system_prompt_hint = (
+                "You are a pragmatic team builder. "
+                "The agents you create must be grounded in reality. "
+                "Do NOT assume access to internal APIs or databases unless explicitly provided. "
+                "If data is needed, prefer searching the web (if possible) or asking the user for a CSV file. "
+                "Agents must use the provided python environment which has pandas, numpy, requests, and matplotlib pre-installed. "
+                "If a library is missing, ask the user to install it or fail gracefully, do NOT pretend it works."
+            )
+
+            enhanced_task = f"{system_prompt_hint}\n\nUser Task: {task}"
+
             try:
                 agent_list, agent_configs = builder.build(
-                    building_task=task,
+                    building_task=enhanced_task,
                     default_llm_config={"config_list": config_list},
                     coding=True
                 )
@@ -166,6 +180,7 @@ def create_team_and_execute(session_id, task, api_key, model):
 
             print(f"Team built with {len(agent_list)} agents. Starting conversation...")
 
+            # Use TERMINATE mode for interactive feedback loop
             user_proxy = InteractiveUserProxy(
                 session_id=session_id,
                 name="User_Proxy",
