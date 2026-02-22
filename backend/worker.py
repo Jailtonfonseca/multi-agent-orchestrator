@@ -5,6 +5,7 @@ import json
 import redis
 import time
 import sys
+import traceback
 import tempfile
 from celery import Celery
 import autogen
@@ -16,7 +17,7 @@ from sqlmodel import Session, select
 from database import engine
 from models import Session as DBSession, Log
 
-# ── Celery & Redis ────────────────────────────────────────────────────────────
+# ── Celery & Redis ─────────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 WORKSPACES_DIR = os.getenv("WORKSPACES_DIR", "/tmp/workspaces")
 MAX_ROUNDS = int(os.getenv("MAX_ROUNDS", "12"))
@@ -25,7 +26,7 @@ app = Celery('autogen_tasks', broker=REDIS_URL, backend=REDIS_URL)
 redis_client = redis.from_url(REDIS_URL)
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# ── Tools ──────────────────────────────────────────────────────────────────────
 def search_web(query: str, tavily_key: str = None) -> str:
     """Search the web using Tavily (preferred) or DuckDuckGo as fallback."""
     if tavily_key and len(tavily_key) > 5:
@@ -35,24 +36,22 @@ def search_web(query: str, tavily_key: str = None) -> str:
             results = response.get("results", [])
             if not results:
                 return "No results found (Tavily)."
-            formatted = [
+            return "\n".join(
                 f"Title: {r.get('title')}\nURL: {r.get('url')}\nContent: {r.get('content')}\n---"
                 for r in results
-            ]
-            return "\n".join(formatted)
+            )
         except Exception as e:
-            print(f"Tavily error: {e}. Falling back to DuckDuckGo.")
+            sys.stderr.write(f"Tavily error: {e}. Falling back to DuckDuckGo.\n")
 
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
             if not results:
                 return "No results found (DDG)."
-            formatted = [
+            return "\n".join(
                 f"Title: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}\n---"
                 for r in results
-            ]
-            return "\n".join(formatted)
+            )
     except Exception as e:
         return f"Error searching web: {str(e)}"
 
@@ -73,7 +72,7 @@ def get_crypto_price(symbol: str) -> str:
         return f"Error fetching crypto price: {str(e)}"
 
 
-# ── Output Redirector ─────────────────────────────────────────────────────────
+# ── Output Redirector ──────────────────────────────────────────────────────────
 class DBOutputRedirector(io.StringIO):
     """Writes stdout to Redis Pub/Sub (real-time) AND PostgreSQL (persistence)."""
 
@@ -83,6 +82,9 @@ class DBOutputRedirector(io.StringIO):
 
     def write(self, s: str) -> int:
         if s.strip():
+            # Always echo to actual stderr so it shows up in docker logs
+            sys.stderr.write(f"[AGENT OUT] {s}\n")
+
             msg = {"type": "log", "content": s, "timestamp": time.time()}
             try:
                 redis_client.publish(self.session_id, json.dumps(msg))
@@ -144,7 +146,7 @@ class InteractiveUserProxy(autogen.UserProxyAgent):
         return ""
 
 
-# ── DB Helpers ────────────────────────────────────────────────────────────────
+# ── DB Helpers ─────────────────────────────────────────────────────────────────
 def _update_db_status(session_id: str, status: str):
     try:
         with Session(engine) as session:
@@ -157,9 +159,17 @@ def _update_db_status(session_id: str, status: str):
         sys.stderr.write(f"DB Status Update Error: {e}\n")
 
 
-# ── Celery Task ───────────────────────────────────────────────────────────────
-@app.task(name="worker.create_team_and_execute")
+def _publish(session_id: str, payload: dict):
+    try:
+        redis_client.publish(session_id, json.dumps(payload))
+    except Exception as e:
+        sys.stderr.write(f"Redis Publish Error: {e}\n")
+
+
+# ── Celery Task ────────────────────────────────────────────────────────────────
+@app.task(name="worker.create_team_and_execute", bind=True, max_retries=0)
 def create_team_and_execute(
+    self,
     session_id: str,
     task: str,
     api_key: str,
@@ -168,18 +178,20 @@ def create_team_and_execute(
     system_message: str = None,
     tavily_key: str = None
 ):
-    output_redirector = DBOutputRedirector(session_id)
+    sys.stderr.write(f"\n{'='*60}\n")
+    sys.stderr.write(f"[TASK START] session={session_id} model={model} provider={provider}\n")
+    sys.stderr.write(f"[TASK] {task[:120]}\n")
+    sys.stderr.write(f"{'='*60}\n")
 
-    # Use a temp file for the OAI config to avoid CWD permission issues
-    config_fd, config_filename = tempfile.mkstemp(suffix=".json", prefix=f"OAI_{session_id}_")
+    output_redirector = DBOutputRedirector(session_id)
     work_dir = os.path.join(WORKSPACES_DIR, session_id)
     os.makedirs(work_dir, exist_ok=True)
 
+    # Write config to a temp file — never use CWD (permission issues)
+    config_fd, config_filename = tempfile.mkstemp(suffix=".json", prefix="OAI_")
+
     try:
-        redis_client.publish(
-            session_id,
-            json.dumps({"type": "status", "content": "BUILDING_TEAM"})
-        )
+        _publish(session_id, {"type": "status", "content": "BUILDING_TEAM"})
 
         # Build provider base URL
         base_url = None
@@ -189,6 +201,8 @@ def create_team_and_execute(
             base_url = "https://api.groq.com/openai/v1"
         elif provider == "deepseek":
             base_url = "https://api.deepseek.com"
+        elif provider == "anthropic":
+            base_url = "https://api.anthropic.com/v1"
 
         config_list = [{"model": model, "api_key": api_key}]
         if base_url:
@@ -196,43 +210,67 @@ def create_team_and_execute(
 
         with os.fdopen(config_fd, "w") as f:
             json.dump(config_list, f)
+        config_fd = -1  # Mark as closed
+
+        llm_config = {"config_list": config_list, "timeout": 120, "cache_seed": None}
 
         with contextlib.redirect_stdout(output_redirector):
-            print(f"🔨 Initializing AgentBuilder for model: {model} via {provider}...")
+            sys.stderr.write(f"[WORKER] Initializing AgentBuilder for {model}...\n")
+            print(f"🔨 Initializing agent team for model: {model} via {provider}...")
 
-            builder = AgentBuilder(
-                config_file_or_env=config_filename,
-                builder_model=model,
-                agent_model=model
-            )
+            try:
+                builder = AgentBuilder(
+                    config_file_or_env=config_filename,
+                    builder_model=model,
+                    agent_model=model
+                )
 
-            system_prompt_hint = (
-                "You are a pragmatic team builder. Agents must use the provided python environment. "
-                "Use the search_web tool to look up information online."
-            )
-            if system_message:
-                system_prompt_hint += f"\n\nAdditional Instructions: {system_message}"
+                system_prompt_hint = (
+                    "You are a pragmatic team builder. Agents must use the provided python environment. "
+                    "Use the search_web tool to look up information online. "
+                    "Always produce concrete, actionable results."
+                )
+                if system_message:
+                    system_prompt_hint += f"\n\nAdditional Instructions: {system_message}"
 
-            enhanced_task = f"{system_prompt_hint}\n\nUser Task: {task}"
+                enhanced_task = f"{system_prompt_hint}\n\nUser Task: {task}"
 
-            agent_list, _agent_configs = builder.build(
-                building_task=enhanced_task,
-                default_llm_config={"config_list": config_list},
-                coding=True
-            )
+                sys.stderr.write("[WORKER] Calling builder.build()...\n")
+                agent_list, _agent_configs = builder.build(
+                    building_task=enhanced_task,
+                    default_llm_config=llm_config,
+                    coding=True
+                )
+                sys.stderr.write(f"[WORKER] Built {len(agent_list)} agents.\n")
+
+            except Exception as builder_err:
+                # AgentBuilder failed (often due to flaml or API issues)
+                # Fall back to a simple single-agent setup
+                sys.stderr.write(f"[WORKER] AgentBuilder failed: {builder_err}\n")
+                sys.stderr.write("[WORKER] Falling back to simple AssistantAgent...\n")
+                print(f"⚠️ AgentBuilder failed ({type(builder_err).__name__}: {builder_err})")
+                print("🔄 Falling back to simple assistant mode...")
+
+                assistant = autogen.AssistantAgent(
+                    name="Assistant",
+                    llm_config=llm_config,
+                    system_message=(
+                        "You are a highly capable AI assistant. Complete the given task thoroughly. "
+                        + (system_message or "")
+                    )
+                )
+                agent_list = [assistant]
 
             _update_db_status(session_id, "EXECUTING_TASK")
-            redis_client.publish(
-                session_id,
-                json.dumps({"type": "status", "content": "EXECUTING_TASK"})
-            )
-            print("✅ Team built. Configuring tools...")
+            _publish(session_id, {"type": "status", "content": "EXECUTING_TASK"})
+            print("✅ Team ready. Starting task execution...")
 
             user_proxy = InteractiveUserProxy(
                 session_id=session_id,
                 name="User_Proxy",
                 human_input_mode="TERMINATE",
-                code_execution_config={"use_docker": False, "work_dir": work_dir}
+                code_execution_config={"use_docker": False, "work_dir": work_dir},
+                max_consecutive_auto_reply=MAX_ROUNDS
             )
 
             def search_web_wrapper(query: str) -> str:
@@ -243,49 +281,62 @@ def create_team_and_execute(
 
             for agent in agent_list:
                 if getattr(agent, 'llm_config', False):
-                    autogen.agentchat.register_function(
-                        search_web_wrapper,
-                        caller=agent,
-                        executor=user_proxy,
-                        name="search_web",
-                        description="Search the web for information using Tavily or DuckDuckGo."
-                    )
-                    autogen.agentchat.register_function(
-                        get_crypto_price,
-                        caller=agent,
-                        executor=user_proxy,
-                        name="get_crypto_price",
-                        description="Get the current USD price of a cryptocurrency (e.g. bitcoin, ethereum)."
-                    )
+                    try:
+                        autogen.agentchat.register_function(
+                            search_web_wrapper,
+                            caller=agent,
+                            executor=user_proxy,
+                            name="search_web",
+                            description="Search the web for real-time information using Tavily or DuckDuckGo."
+                        )
+                        autogen.agentchat.register_function(
+                            get_crypto_price,
+                            caller=agent,
+                            executor=user_proxy,
+                            name="get_crypto_price",
+                            description="Get current USD price of a cryptocurrency by its CoinGecko ID (e.g. bitcoin, ethereum)."
+                        )
+                    except Exception as tool_err:
+                        sys.stderr.write(f"[WORKER] Tool registration warning: {tool_err}\n")
 
-            group_chat = autogen.GroupChat(
-                agents=[user_proxy] + agent_list,
-                messages=[],
-                max_round=MAX_ROUNDS
-            )
-            manager = autogen.GroupChatManager(
-                groupchat=group_chat,
-                llm_config={"config_list": config_list}
-            )
-
-            user_proxy.initiate_chat(manager, message=task)
+            if len(agent_list) == 1:
+                # Simple two-agent chat
+                sys.stderr.write("[WORKER] Starting two-agent chat...\n")
+                user_proxy.initiate_chat(agent_list[0], message=task)
+            else:
+                # Group chat
+                sys.stderr.write(f"[WORKER] Starting group chat with {len(agent_list)+1} participants...\n")
+                group_chat = autogen.GroupChat(
+                    agents=[user_proxy] + agent_list,
+                    messages=[],
+                    max_round=MAX_ROUNDS
+                )
+                manager = autogen.GroupChatManager(
+                    groupchat=group_chat,
+                    llm_config=llm_config
+                )
+                user_proxy.initiate_chat(manager, message=task)
 
         _update_db_status(session_id, "COMPLETED")
-        redis_client.publish(
-            session_id,
-            json.dumps({"type": "status", "content": "COMPLETED"})
-        )
-        print("🎉 Task completed successfully.")
+        _publish(session_id, {"type": "status", "content": "COMPLETED"})
+        sys.stderr.write(f"[WORKER] Task COMPLETED for session {session_id}\n")
+        print("🎉 Task completed successfully!")
 
     except Exception as e:
+        full_traceback = traceback.format_exc()
+        sys.stderr.write(f"[WORKER ERROR] session={session_id}\n{full_traceback}\n")
+
+        error_msg = f"{type(e).__name__}: {str(e)}"
         _update_db_status(session_id, "ERROR")
-        redis_client.publish(
-            session_id,
-            json.dumps({"type": "error", "content": str(e)})
-        )
-        sys.stderr.write(f"Worker Error [{session_id}]: {e}\n")
+        _publish(session_id, {"type": "error", "content": error_msg})
+        _publish(session_id, {"type": "log", "content": f"\n**ERROR:** {error_msg}\n\nSee worker logs for full traceback."})
 
     finally:
         # Always clean up temp config file
+        try:
+            if config_fd != -1:
+                os.close(config_fd)
+        except Exception:
+            pass
         if os.path.exists(config_filename):
             os.remove(config_filename)

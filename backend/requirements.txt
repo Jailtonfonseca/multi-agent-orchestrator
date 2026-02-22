@@ -1,4 +1,5 @@
 pyautogen==0.2.32
+flaml[automl]
 fastapi
 uvicorn
 redis
