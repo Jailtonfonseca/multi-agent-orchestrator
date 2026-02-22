@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from celery import Celery
 from sqlmodel import Session, select
 from typing import List, Optional
 import json
@@ -10,8 +9,8 @@ import uuid
 import asyncio
 import time
 import os
-import redis
-import redis.asyncio as aioredis
+import sys
+import traceback
 
 from database import create_db_and_tables, get_session, engine
 from models import Session as DBSession, Log
@@ -19,18 +18,24 @@ from models import Session as DBSession, Log
 # ── Redis ──────────────────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
-# Use from_url — robust, handles auth, db index, etc.
-redis_client = redis.from_url(REDIS_URL, decode_responses=False)
-aioredis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
+import redis
+import redis.asyncio as aioredis
+
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=False)
+aioredis_client = aioredis.Redis.from_url(REDIS_URL, decode_responses=False)
 
 # ── Celery (send-only — we never import worker.py here) ───────────────────────
-# Importing from worker.py would force the entire AutoGen/flaml stack to load
-# in the API process, causing crashes if packages are missing.
-celery_app = Celery("autogen_tasks", broker=REDIS_URL, backend=REDIS_URL)
+try:
+    from celery import Celery
+    celery_app = Celery("autogen_tasks", broker=REDIS_URL, backend=REDIS_URL)
+    print("[MAIN] Celery client initialized OK.")
+except Exception as e:
+    print(f"[MAIN] WARNING: Celery import failed: {e}")
+    celery_app = None
 
 
 def _wait_for_db(retries: int = 10, delay: float = 2.0):
-    """Retry DB creation on startup — avoids race condition with Postgres."""
+    """Retry DB creation on startup — avoids race with Postgres."""
     for attempt in range(1, retries + 1):
         try:
             create_db_and_tables()
@@ -48,15 +53,18 @@ def _wait_for_db(retries: int = 10, delay: float = 2.0):
 async def lifespan(app: FastAPI):
     _wait_for_db()
     yield
-    await aioredis_client.aclose()
+    try:
+        await aioredis_client.aclose()
+    except Exception:
+        pass
 
 
-app = FastAPI(title="AutoGen Enterprise API", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="AutoGen Enterprise API", version="1.3.0", lifespan=lifespan)
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
+# ── CORS — allow ALL origins for development ──────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Allow all origins for dev; restrict in prod
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +99,9 @@ def start_task(
     request: TaskRequest,
     session: Session = Depends(get_session)
 ):
+    if celery_app is None:
+        raise HTTPException(status_code=503, detail="Celery not available. Check backend logs.")
+
     session_id = str(uuid.uuid4())
 
     db_sess = DBSession(
@@ -103,19 +114,25 @@ def start_task(
     session.add(db_sess)
     session.commit()
 
-    # Send task to Celery worker by name string — no worker imports needed
-    celery_app.send_task(
-        "worker.create_team_and_execute",
-        kwargs={
-            "session_id": session_id,
-            "task": request.task,
-            "api_key": request.api_key,
-            "model": request.model,
-            "provider": request.provider,
-            "system_message": request.system_message,
-            "tavily_key": request.tavily_key,
-        }
-    )
+    try:
+        celery_app.send_task(
+            "worker.create_team_and_execute",
+            kwargs={
+                "session_id": session_id,
+                "task": request.task,
+                "api_key": request.api_key,
+                "model": request.model,
+                "provider": request.provider,
+                "system_message": request.system_message,
+                "tavily_key": request.tavily_key,
+            }
+        )
+    except Exception as e:
+        # Update status so user sees the error
+        db_sess.status = "ERROR"
+        session.add(db_sess)
+        session.commit()
+        raise HTTPException(status_code=500, detail=f"Failed to queue task: {str(e)}")
 
     return {"session_id": session_id}
 
@@ -145,10 +162,9 @@ def send_reply(reply: ChatReply, session: Session = Depends(get_session)):
 
 @app.get("/api/sessions", response_model=List[SessionResponse])
 def get_sessions(session: Session = Depends(get_session)):
-    all_sessions = session.exec(
+    return session.exec(
         select(DBSession).order_by(DBSession.created_at.desc())
     ).all()
-    return all_sessions
 
 
 @app.get("/api/sessions/{session_id}", response_model=SessionResponse)
@@ -181,7 +197,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     try:
         while True:
-            # Check for incoming messages from Redis
             message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
             if message:
                 try:
@@ -192,18 +207,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 except Exception:
                     break
 
-            # Check if client sent anything (keepalive / disconnect detection)
-            try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
-                # Client can send "ping" for keepalive; just ignore
-            except asyncio.TimeoutError:
-                pass
-            except WebSocketDisconnect:
-                break
-            except Exception:
-                break
-
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
 
     except WebSocketDisconnect:
         pass
@@ -219,8 +223,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
 @app.get("/health")
 def health_check():
-    """Deep health check: tests Redis and DB connectivity."""
-    health = {"status": "ok", "redis": "ok", "db": "ok", "version": "1.2.0"}
+    """Deep health check: tests Redis, DB and Celery connectivity."""
+    health = {"status": "ok", "redis": "ok", "db": "ok", "celery": "ok", "version": "1.3.0"}
 
     try:
         redis_client.ping()
@@ -235,4 +239,13 @@ def health_check():
         health["db"] = f"error: {str(e)}"
         health["status"] = "degraded"
 
+    if celery_app is None:
+        health["celery"] = "error: not initialized"
+        health["status"] = "degraded"
+
     return health
+
+
+# ── Debug: print on startup ──────────────────────────────────────────────────
+print(f"[MAIN] Backend starting — REDIS_URL={REDIS_URL}")
+print(f"[MAIN] CORS: allow_origins=['*']")
