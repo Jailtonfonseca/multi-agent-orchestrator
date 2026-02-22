@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from celery import Celery
 from sqlmodel import Session, select
 from typing import List, Optional
 import json
@@ -14,15 +15,18 @@ import redis.asyncio as aioredis
 
 from database import create_db_and_tables, get_session, engine
 from models import Session as DBSession, Log
-from worker import create_team_and_execute, app as celery_app
 
 # ── Redis ──────────────────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-redis_host = REDIS_URL.split("//")[-1].split(":")[0]
-redis_port = int(REDIS_URL.split(":")[-1].split("/")[0])
 
-redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=False)
-aioredis_client = aioredis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=False)
+# Use from_url — robust, handles auth, db index, etc.
+redis_client = redis.from_url(REDIS_URL, decode_responses=False)
+aioredis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
+
+# ── Celery (send-only — we never import worker.py here) ───────────────────────
+# Importing from worker.py would force the entire AutoGen/flaml stack to load
+# in the API process, causing crashes if packages are missing.
+celery_app = Celery("autogen_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
 
 def _wait_for_db(retries: int = 10, delay: float = 2.0):
@@ -39,28 +43,20 @@ def _wait_for_db(retries: int = 10, delay: float = 2.0):
     raise RuntimeError("Could not connect to the database after multiple retries.")
 
 
-# ── Lifespan (replaces deprecated @app.on_event) ─────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _wait_for_db()
     yield
-    # Cleanup on shutdown
     await aioredis_client.aclose()
 
 
-app = FastAPI(title="AutoGen Enterprise API", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="AutoGen Enterprise API", version="1.2.0", lifespan=lifespan)
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
-origins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:3001",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],          # Allow all origins for dev; restrict in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,17 +103,21 @@ def start_task(
     session.add(db_sess)
     session.commit()
 
-    task_result = create_team_and_execute.delay(
-        session_id=session_id,
-        task=request.task,
-        api_key=request.api_key,
-        model=request.model,
-        provider=request.provider,
-        system_message=request.system_message,
-        tavily_key=request.tavily_key
+    # Send task to Celery worker by name string — no worker imports needed
+    celery_app.send_task(
+        "worker.create_team_and_execute",
+        kwargs={
+            "session_id": session_id,
+            "task": request.task,
+            "api_key": request.api_key,
+            "model": request.model,
+            "provider": request.provider,
+            "system_message": request.system_message,
+            "tavily_key": request.tavily_key,
+        }
     )
 
-    return {"session_id": session_id, "task_id": task_result.id}
+    return {"session_id": session_id}
 
 
 @app.post("/api/stop-task/{session_id}")
@@ -181,24 +181,34 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
     try:
         while True:
+            # Check for incoming messages from Redis
             message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
-
             if message:
                 try:
-                    if isinstance(message['data'], bytes):
-                        data_str = message['data'].decode('utf-8')
-                        await websocket.send_text(data_str)
-                    elif isinstance(message['data'], str):
-                        await websocket.send_text(message['data'])
+                    data = message['data']
+                    if isinstance(data, bytes):
+                        data = data.decode('utf-8')
+                    await websocket.send_text(data)
                 except Exception:
                     break
+
+            # Check if client sent anything (keepalive / disconnect detection)
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
+                # Client can send "ping" for keepalive; just ignore
+            except asyncio.TimeoutError:
+                pass
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                break
 
             await asyncio.sleep(0.01)
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"WebSocket Loop Error: {e}")
+        print(f"WebSocket error [{session_id}]: {e}")
     finally:
         try:
             await pubsub.unsubscribe(session_id)
@@ -210,16 +220,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 @app.get("/health")
 def health_check():
     """Deep health check: tests Redis and DB connectivity."""
-    health = {"status": "ok", "redis": "ok", "db": "ok"}
+    health = {"status": "ok", "redis": "ok", "db": "ok", "version": "1.2.0"}
 
-    # Check Redis
     try:
         redis_client.ping()
     except Exception as e:
         health["redis"] = f"error: {str(e)}"
         health["status"] = "degraded"
 
-    # Check DB
     try:
         with Session(engine) as session:
             session.exec(select(DBSession).limit(1)).all()
