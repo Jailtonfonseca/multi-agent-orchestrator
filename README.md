@@ -7,6 +7,7 @@ A scalable, production-ready platform for building and managing autonomous AI ag
 ## 🌟 Key Features
 
 *   **Interactive Chat Sessions**: Not just "fire and forget". The system pauses when agents need input, allowing you to guide the team mid-task.
+*   **Web Search Capability**: Agents are equipped with `duckduckgo-search` to access real-time information and prevent hallucinations.
 *   **Session History**: All tasks and logs are persisted in Redis. Switch between past sessions via the Sidebar, just like ChatGPT.
 *   **Model Agnostic**: Use **any** OpenRouter model (GPT-4o, Claude 3.5, Llama 3 70B, etc.) by simply typing its ID.
 *   **Real-Time Streaming**: Watch agents think and converse instantly via WebSockets.
@@ -63,6 +64,9 @@ Sessions are stored in Redis:
 
 ### Human-in-the-Loop
 The backend uses a custom `InteractiveUserProxy` that overrides AutoGen's `get_human_input`. It pauses execution, publishes a status update to Redis, and waits for a message on a dedicated `input_{session_id}` channel, which is triggered by the Frontend's `/api/reply` endpoint.
+
+### Tools & Capabilities
+Agents are automatically provisioned with the `search_web` tool, powered by `duckduckgo-search`. This allows them to perform unlimited, key-free web searches to gather data, verify facts, or find documentation, significantly reducing "hallucinations" (invented facts).
 
 ## 🛡️ Security Notes
 *   **Execution Sandbox**: Currently, agents run code inside the Worker container. For public production use, you **must** implement Docker-in-Docker sandboxing to isolate agent code execution.

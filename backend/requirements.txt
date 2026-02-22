@@ -17,3 +17,4 @@ openpyxl
 beautifulsoup4
 lxml
 wcwidth
+duckduckgo-search
