@@ -22,5 +22,5 @@ tavily-python
 sqlmodel
 psycopg2-binary
 bcrypt
-pyjwt
+python-jose[cryptography]
 passlib[bcrypt]
