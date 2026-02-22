@@ -1,13 +1,77 @@
 version: '3.8'
 
 services:
-  autogen-app:
-    build: .
+  backend:
+    build: ./backend
     ports:
-      - "8501:8501"
-    volumes:
-      - .:/app
+      - "8000:8000"
     environment:
-      - PYTHONUNBUFFERED=1
-    restart: unless-stopped
-    command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_URL=postgresql://autogen:autogen123@db:5432/autogen_db
+    depends_on:
+      - redis
+      - db
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend:/app
+
+  worker:
+    build: ./backend
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_URL=postgresql://autogen:autogen123@db:5432/autogen_db
+    depends_on:
+      - redis
+      - backend
+      - db
+    command: celery -A worker.app worker --loglevel=info
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=autogen
+      - POSTGRES_PASSWORD=autogen123
+      - POSTGRES_DB=autogen_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  postgres_data:

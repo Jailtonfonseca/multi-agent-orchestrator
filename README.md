@@ -1,81 +1,73 @@
-# 🤖 AutoGen AgentBuilder Team
+# 🤖 AutoGen Enterprise (Microservices)
 
-![Application Screenshot](assets/screenshot.png)
+A scalable, production-ready platform for building and managing autonomous AI agent teams. Built with a modern microservices architecture, it features real-time interaction, session persistence, and a robust task execution engine.
 
-A powerful, containerized Python web application that leverages **Microsoft AutoGen** and **OpenRouter** to autonomously build and orchestrate multi-agent teams. Enter a complex task, and the system will design a team of specialized AI agents to solve it for you.
+![Architecture Diagram](https://mermaid.ink/img/pako:eNp1kcFqwzAMhl8l6NRChx022GHQYYesu4ySg1FjaWJbOQ5lTPDdd5K2W06FIPz6T9LPSF6sQoG04W3lG_RaYTfKBytPVqE4-sEOGhVvLDr08m1l0KGP44QzLniG3mFw8BNa_x96_Qk9TviEPY7Y44S3eMZbPOHtiLd4xod4xod4wYd4wYf4yYf4yU_4yU_4J37CP_E_uF85W4W2QoH0t2qF0qJShbLRqEJZ71ShrDeqUNY7VSjrnSqU9U4VynqnCmW9U4Wy3qlCWe9Uoax3qlDWO1Uo650qlPVO1f8A5qVzNw)
 
-## 🚀 Features
+## 🌟 Key Features
 
-*   **Autonomous Team Building**: Uses `AgentBuilder` to analyze your task and dynamically instantiate the perfect team of experts.
-*   **Real-time Conversation**: Visualize the multi-agent chat as it happens, with a custom-built log capture system that streams stdout to the Streamlit UI.
-*   **Model Agnostic**: Compatible with any model on OpenRouter (e.g., GPT-4o, Claude 3.5 Sonnet, Gemini Pro 1.5).
-*   **Custom Models**: Easily select "Other..." to manually enter any valid OpenRouter model ID.
-*   **Dockerized**: Fully containerized environment ensuring consistency and easy deployment.
-*   **Secure**: API keys are handled securely via session state and temporary configuration files.
+*   **Interactive Chat Sessions**: Not just "fire and forget". The system pauses when agents need input, allowing you to guide the team mid-task.
+*   **Web Search Capability**: Agents are equipped with `duckduckgo-search` to access real-time information and prevent hallucinations.
+*   **Session History**: All tasks and logs are persisted in Redis. Switch between past sessions via the Sidebar, just like ChatGPT.
+*   **Model Agnostic**: Use **any** OpenRouter model (GPT-4o, Claude 3.5, Llama 3 70B, etc.) by simply typing its ID.
+*   **Real-Time Streaming**: Watch agents think and converse instantly via WebSockets.
+*   **Scalable Architecture**: Decoupled Frontend, Backend, and Worker services.
 
-## 🛠️ Tech Stack
+## 🏗️ Architecture
 
-*   **Frontend**: [Streamlit](https://streamlit.io/)
-*   **Agent Framework**: [Microsoft AutoGen](https://microsoft.github.io/autogen/)
-*   **LLM Provider**: [OpenRouter](https://openrouter.ai/) (OpenAI API Compatible)
-*   **Infrastructure**: Docker & Docker Compose
+*   **Frontend**: React (SPA) with Sidebar navigation and WebSocket integration.
+*   **Backend**: FastAPI for REST endpoints and WebSocket management.
+*   **Worker**: Celery + Redis for asynchronous agent orchestration.
+*   **Storage**: Redis (Hash/List) for session metadata and persistent log history.
 
-## 📋 Prerequisites
+## 🚀 Quick Start
 
-*   **Docker** and **Docker Compose** installed on your machine.
-*   An **OpenRouter API Key** with credits. [Get one here](https://openrouter.ai/keys).
+### Prerequisites
+*   Docker & Docker Compose
+*   [OpenRouter API Key](https://openrouter.ai/keys)
 
-## 🏃‍♂️ Installation & Usage
+### Installation
 
-1.  **Clone the Repository**
+1.  **Clone the repo**
     ```bash
     git clone <repository-url>
     cd <repository-directory>
     ```
 
-2.  **Start the Application**
-    Run the container using Docker Compose:
+2.  **Launch the stack**
     ```bash
-    docker-compose up -d
+    docker-compose up -d --build
     ```
 
-3.  **Access the Interface**
-    Open your browser and navigate to:
-    ```
-    http://localhost:8501
-    ```
+3.  **Open the App**
+    Navigate to `http://localhost:3000`
 
-4.  **Build Your Team**
-    *   Enter your **OpenRouter API Key** in the sidebar.
-    *   Select your preferred **LLM Model** (e.g., `openai/gpt-4o` or `anthropic/claude-3.5-sonnet`).
-    *   Type a complex task in the main text area (e.g., *"Write a Python script to scrape the latest news about 'AI Agents' and save the headlines to a CSV file."*).
-    *   Click **Build Team & Execute**.
+### Usage Guide
 
-## 🏗️ Architecture & Technical Decisions
+1.  **Create a New Task**: Click "+" in the sidebar.
+2.  **Configure**:
+    *   **API Key**: Enter your OpenRouter key.
+    *   **Model**: Type the model ID (e.g., `openai/gpt-4o`, `anthropic/claude-3-opus`, `meta-llama/llama-3-70b-instruct`).
+    *   **Task**: Describe what you want the team to do.
+3.  **Interact**:
+    *   Watch the logs stream.
+    *   If the status changes to `WAITING FOR INPUT`, type your reply in the input box to guide the agents.
+4.  **Review**: Click on any past session in the sidebar to load its full conversation history.
 
-### The Challenge: Capturing AutoGen Logs
-AutoGen streams its agent conversations to `stdout` (the console) by default. Capturing this real-time stream and displaying it in a web interface like Streamlit is non-trivial.
+## 🔧 Technical Details
 
-### The Solution: Custom Stdout Redirection
-We implemented a robust `StreamlitRedirector` class that acts as a buffer between `sys.stdout` and the Streamlit UI.
+### Session Persistence
+Sessions are stored in Redis:
+*   `session:{id}` (Hash): Metadata (Task, Model, Status, CreatedAt).
+*   `logs:{id}` (List): JSON objects of every log line and user interaction.
+*   `all_sessions` (List): Ordered list of session IDs for the sidebar.
 
-1.  **Redirection**: We use `contextlib.redirect_stdout` to route all print statements to our custom class.
-2.  **Parsing**: The redirector uses Regex to detect standard AutoGen chat patterns (e.g., `Sender (to Receiver):`).
-3.  **Rendering**: When a complete message is detected, it is formatted and rendered immediately using `st.chat_message`, providing a fluid, chat-like experience.
-4.  **AgentBuilder Config**: To satisfy `AgentBuilder`'s file-based configuration requirement, the app dynamically generates a temporary `OAI_CONFIG_LIST.json` for each session and cleans it up afterward.
+### Human-in-the-Loop
+The backend uses a custom `InteractiveUserProxy` that overrides AutoGen's `get_human_input`. It pauses execution, publishes a status update to Redis, and waits for a message on a dedicated `input_{session_id}` channel, which is triggered by the Frontend's `/api/reply` endpoint.
 
-### Directory Structure
-```
-.
-├── app.py                  # Main application logic
-├── Dockerfile              # Container definition (Python 3.10-slim + build tools)
-├── docker-compose.yml      # Service orchestration
-├── requirements.txt        # Python dependencies (pinned for stability)
-├── assets/                 # Images and static assets
-└── README.md               # Documentation
-```
+### Tools & Capabilities
+Agents are automatically provisioned with the `search_web` tool, powered by `duckduckgo-search`. This allows them to perform unlimited, key-free web searches to gather data, verify facts, or find documentation, significantly reducing "hallucinations" (invented facts).
 
-## ⚠️ Notes
-
-*   **Latency**: Initial team building can take 30-60 seconds depending on the complexity of the task.
-*   **Model capabilities**: Ensure you select a capable model (like GPT-4 or Claude 3.5) for the best results in code generation and function calling.
+## 🛡️ Security Notes
+*   **Execution Sandbox**: Currently, agents run code inside the Worker container. For public production use, you **must** implement Docker-in-Docker sandboxing to isolate agent code execution.
+*   **API Keys**: Keys are passed per request. In a multi-user environment, implement OAuth2 and encrypted key storage.
